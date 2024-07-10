@@ -8,7 +8,7 @@ from isaacgym import gymapi
 from isaacgym.gymutil import get_bucketed_val
 from loguru import logger
 
-from dexenv.utils.common import get_all_files_with_suffix
+from hora.utils.common import get_all_files_with_suffix
 
 
 @torch.no_grad()
