@@ -489,12 +489,12 @@ def chunker_list(seq_list, nchunks):
     return [seq_list[i::nchunks] for i in range(nchunks)]
 
 
-def resolve_expert_model_path(model_path):
-    model_path = pathlib_file(model_path)
-    if not model_path.is_absolute():
-        import dexenv
-        model_path = dexenv.LIB_PATH / model_path
-    return model_path
+# def resolve_expert_model_path(model_path):
+#     model_path = pathlib_file(model_path)
+#     if not model_path.is_absolute():
+#         import dexenv
+#         model_path = dexenv.LIB_PATH / model_path
+#     return model_path
 
 
 def string_list_to_list(list_in_str):
@@ -504,9 +504,9 @@ def string_list_to_list(list_in_str):
     return out
 
 
-def process_cfg(cfg):
-    if cfg.alg.expert_path is not None and 'wandb:' not in cfg.alg.expert_path:
-        cfg.alg.expert_path = resolve_expert_model_path(cfg.alg.expert_path).as_posix()
+# def process_cfg(cfg):
+#     if cfg.alg.expert_path is not None and 'wandb:' not in cfg.alg.expert_path:
+#         cfg.alg.expert_path = resolve_expert_model_path(cfg.alg.expert_path).as_posix()
 
 
 def plot_ecff(dist):

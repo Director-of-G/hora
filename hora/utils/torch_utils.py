@@ -17,11 +17,11 @@ from torch.distributions import Categorical
 from torch.distributions import Independent
 from torch.distributions import TransformedDistribution
 
-from dexenv.utils.common import module_available
-from dexenv.utils.common import pathlib_file
-from dexenv.utils.wandb_utils import create_artifact_download_path
-from dexenv.utils.wandb_utils import create_artifact_name
-from dexenv.utils.wandb_utils import create_model_name
+from hora.utils.common import module_available
+from hora.utils.common import pathlib_file
+from hora.utils.wandb_utils import create_artifact_download_path
+from hora.utils.wandb_utils import create_artifact_name
+from hora.utils.wandb_utils import create_model_name
 
 PYTORCH3D_AVAILABLE = module_available('pytorch3d')
 if PYTORCH3D_AVAILABLE:
