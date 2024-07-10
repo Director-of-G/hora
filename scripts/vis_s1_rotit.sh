@@ -3,8 +3,8 @@ CACHE=$1
 OBJECT=$2
 NAME=$3
 SIZE=$4
-python train.py task=AllegroHandHora headless=False pipeline=gpu \
-task.env.numEnvs=1 test=True \
+python train.py task=AllegroHandRotateIt headless=False pipeline=gpu \
+task.env.numEnvs=100 test=True \
 task.env.object.type="${OBJECT}" \
 train.algo=PPO \
 task.env.randomization.randomizeMass=False \

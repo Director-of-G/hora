@@ -19,3 +19,6 @@ outputs/
 
 outputs
 cache
+
+assets/ycb/*
+assets/miscnet/*

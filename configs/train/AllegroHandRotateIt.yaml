@@ -6,7 +6,7 @@ network:
   priv_mlp:
     units: [256, 128, 8]
   mesh_ptd_mlp:
-    units: null
+    units: [32, 32, 32]
 
 load_path: ${..checkpoint} # path to the checkpoint to load
 
@@ -22,8 +22,8 @@ ppo:
   learning_rate: 5e-3
   kl_threshold: 0.02
   # PPO batch collection
-  horizon_length: 8
-  minibatch_size: 32768
+  horizon_length: 8 # default: 8
+  minibatch_size: 64 # default: 32768
   mini_epochs: 5
   # PPO loss setting
   clip_value: True
@@ -39,9 +39,9 @@ ppo:
   save_frequency: 500
   max_agent_steps: 1500000000
   # hora setting
-  priv_info: False
-  priv_info_dim: 9
+  priv_info: True
+  priv_info_dim: 17
   priv_info_embed_dim: 8
-  mesh_ptd: False
-  mesh_pts_num: null
+  mesh_ptd: True
+  mesh_pts_num: 100
   proprio_adapt: False

@@ -8,16 +8,29 @@
 import os
 import torch
 import numpy as np
+import pytorch3d.transforms as p3dtf
+from tqdm import tqdm
+from pathlib import Path
+
+from gym.utils import seeding
 from isaacgym import gymtorch
 from isaacgym import gymapi
 from isaacgym.torch_utils import to_torch, unscale, quat_apply, tensor_clamp, torch_rand_float, quat_conjugate, quat_mul
 from glob import glob
 from hora.utils.misc import tprint
+from hora.utils.common import get_all_files_with_suffix, get_all_files_with_name, load_from_pickle, get_filename_from_path
+from hora.utils.isaac_utils import load_an_object_asset, load_a_goal_object_asset, load_obj_texture
+from hora.utils.torch_utils import torch_float, torch_long, quat_xyzw_to_wxyz
 from .base.vec_task import VecTask
 
 
-class AllegroHandHora(VecTask):
+class AllegroHandRotateIt(VecTask):
     def __init__(self, config, sim_device, graphics_device_id, headless):
+        self.set_random_gen()
+        self.object_urdfs, self.dataset_path, self.urdf_path, self.obj_name_to_cat_id = \
+            self.parse_obj_dataset(config["env"]["object"]["dataset"])
+        self.num_objects = len(self.object_urdfs)
+
         self.config = config
         # before calling init in VecTask, need to do
         # 1. setup randomization
@@ -26,7 +39,6 @@ class AllegroHandHora(VecTask):
         self._setup_priv_option_config(config['env']['privInfo'])
         # 3. setup object assets
         self._setup_object_info(config['env']['object'])
-        self._parse_object_info(config['env']['object'])
         # 4. setup reward
         self._setup_reward_config(config['env']['reward'])
         self.base_obj_scale = config['env']['baseObjScale']
@@ -35,18 +47,24 @@ class AllegroHandHora(VecTask):
         self.up_axis = 'z'
         self.reset_z_threshold = self.config['env']['reset_height_threshold']
         self.grasp_cache_name = self.config['env']['grasp_cache_name']
-        if self.grasp_cache_name is None: self.grasp_cache_name = ""
         self.grasp_cache_size = self.config['env']['grasp_cache_size']
         self.evaluate = self.config['on_evaluation']
+
+        # obj_orientation, obj_angvel & obj_restitution are considered in RotateIt
         self.priv_info_dict = {
             'obj_position': (0, 3),
-            'obj_scale': (3, 4),
-            'obj_mass': (4, 5),
-            'obj_friction': (5, 6),
-            'obj_com': (6, 9),
+            'obj_orientation': (3, 7),
+            'obj_angvel': (7, 10),
+            'obj_scale': (10, 11),
+            'obj_mass': (11, 12),
+            'obj_friction': (12, 13),
+            'obj_com': (13, 16),
+            'obj_restitution': (16, 17)
         }
 
         super().__init__(config, sim_device, graphics_device_id, headless)
+
+        self.read_finger_ptd()
 
         self.debug_viz = self.config['env']['enableDebugVis']
         self.max_episode_length = self.config['env']['episodeLength']
@@ -122,22 +140,40 @@ class AllegroHandHora(VecTask):
         self.env_evaluated = 0
         self.max_evaluate_envs = 500000
 
-        self.num_env_steps = 0
+    def read_finger_ptd(self):
+        self.base_link_pose_inv_rot = None
+        self.base_link_pose_inv_pos = None
+        self.quantization_size = None
+        self.finger_tip_links = ['link_3.0', 'link_7.0', 'link_11.0', 'link_15.0']
 
-    def _parse_object_info(self, o_config):
-        if "objectAsset" in o_config:
-            self.grasp_cache_dataset_name = o_config['objectAsset'].split("/")[1]
-            self.grasp_cache_object_name = o_config['objectAsset'].split("/")[3].split(".")[0]
-        else:
-            self.grasp_cache_dataset_name = None
-            self.grasp_cache_object_name = None
+        self.hand_body_links_to_handles = self.gym.get_actor_rigid_body_dict(self.envs[0], self.dex_hands[0])
+        self.base_link_handle = torch_long([self.hand_body_links_to_handles['base_link']])
+        self.finger_tip_handles = [self.hand_body_links_to_handles[x] for x in self.finger_tip_links]
+        self.finger_tip_handles = torch_long(self.finger_tip_handles, device=self.device)
+
+        self.obj_cad_ptd = self.object_ptds
+        self.obj_cad_ptd = self.obj_cad_ptd.view(-1, self.obj_cad_ptd.shape[-2], self.obj_cad_ptd.shape[-1]).float()
+
+        # self.se3_T_buf = torch.eye(4, device=self.device).repeat(self.num_envs * (len(self.ptd_body_links) + 2),
+        #                                                          1,
+        #                                                          1)
+
+        # self.se3_T_hand_buf = torch.eye(4, device=self.device).repeat(self.num_envs * len(self.ptd_body_links),
+        #                                                               1,
+        #                                                               1)
+
+        self.se3_T_obj_buf = torch.eye(4, device=self.device).repeat(self.num_envs, 1, 1)
+
+    def set_random_gen(self, seed=12345):
+        self.np_random, seed = seeding.np_random(seed)
 
     def _create_envs(self, num_envs, spacing, num_per_row):
         self._create_ground_plane()
         lower = gymapi.Vec3(-spacing, -spacing, 0.0)
         upper = gymapi.Vec3(spacing, spacing, spacing)
 
-        self._create_object_asset()
+        self._create_hand_asset()
+        object_assets, object_ids, object_textures, object_ptds = self.load_object_asset()
 
         # set allegro_hand dof properties
         self.num_allegro_hand_dofs = self.gym.get_asset_dof_count(self.hand_asset)
@@ -168,37 +204,56 @@ class AllegroHandHora(VecTask):
         # compute aggregate size
         self.num_allegro_hand_bodies = self.gym.get_asset_rigid_body_count(self.hand_asset)
         self.num_allegro_hand_shapes = self.gym.get_asset_rigid_shape_count(self.hand_asset)
-        max_agg_bodies = self.num_allegro_hand_bodies + 2
-        max_agg_shapes = self.num_allegro_hand_shapes + 2
+        # max_agg_bodies = self.num_allegro_hand_bodies + 2
+        # max_agg_shapes = self.num_allegro_hand_shapes + 2
 
+        self.dex_hands = []
         self.envs = []
 
         self.object_init_state = []
 
         self.hand_indices = []
         self.object_indices = []
+        self.goal_object_indices = []
 
         allegro_hand_rb_count = self.gym.get_asset_rigid_body_count(self.hand_asset)
-        object_rb_count = 1
+        object_rb_count = self.gym.get_asset_rigid_body_count(object_assets[0])
         self.object_rb_handles = list(range(allegro_hand_rb_count, allegro_hand_rb_count + object_rb_count))
-
+        
+        self.object_ptds = []
+        self.object_handles = []
+        num_object_assets = len(object_assets)
+        env_obj_ids = []
         for i in range(num_envs):
+            obj_asset_id = i % num_object_assets
+            env_obj_ids.append(object_ids[obj_asset_id])
+
             # create env instance
             env_ptr = self.gym.create_env(self.sim, lower, upper, num_per_row)
+            self.object_ptds.append(object_ptds[obj_asset_id])
+
             if self.aggregate_mode >= 1:
-                self.gym.begin_aggregate(env_ptr, max_agg_bodies * 20, max_agg_shapes * 20, True)
+                obj_num_bodies = self.gym.get_asset_rigid_body_count(object_assets[obj_asset_id])
+                obj_num_shapes = self.gym.get_asset_rigid_shape_count(object_assets[obj_asset_id])
+                max_agg_bodies = self.num_allegro_hand_bodies + obj_num_bodies * 2 + 1
+                max_agg_shapes = self.num_allegro_hand_shapes + obj_num_shapes * 2 + 1
+                # self.gym.begin_aggregate(env_ptr, max_agg_bodies * 20, max_agg_shapes * 20, True)
+                self.gym.begin_aggregate(env_ptr, max_agg_bodies, max_agg_shapes, True)
 
             # add hand - collision filter = -1 to use asset collision filters set in mjcf loader
             hand_actor = self.gym.create_actor(env_ptr, self.hand_asset, hand_pose, 'hand', i, -1, 0)
             self.gym.set_actor_dof_properties(env_ptr, hand_actor, allegro_hand_dof_props)
             hand_idx = self.gym.get_actor_index(env_ptr, hand_actor, gymapi.DOMAIN_SIM)
             self.hand_indices.append(hand_idx)
+            self.dex_hands.append(hand_actor)
 
             # add object
-            object_type_id = np.random.choice(len(self.object_type_list), p=self.object_type_prob)
-            object_asset = self.object_asset_list[object_type_id]
+            # object_type_id = np.random.choice(len(self.object_type_list), p=self.object_type_prob)
+            # object_asset = self.object_asset_list[object_type_id]
+            object_asset = object_assets[obj_asset_id]
 
             object_handle = self.gym.create_actor(env_ptr, object_asset, obj_pose, 'object', i, 0, 0)
+            self.object_handles.append(object_handle)
             self.object_init_state.append([
                 obj_pose.p.x, obj_pose.p.y, obj_pose.p.z,
                 obj_pose.r.x, obj_pose.r.y, obj_pose.r.z, obj_pose.r.w,
@@ -240,6 +295,22 @@ class AllegroHandHora(VecTask):
                 obj_friction = rand_friction
             self._update_priv_buf(env_id=i, name='obj_friction', value=obj_friction)
 
+            # restitution is included as priv_info in RotateIt, but not randomized
+            obj_restitution = 0.0
+            if self.randomize_restitution:
+                rand_restitution = np.random.uniform(self.randomize_restitution_lower, self.randomize_restitution_upper)
+                hand_props = self.gym.get_actor_rigid_shape_properties(env_ptr, hand_actor)
+                for p in hand_props:
+                    p.restitution = rand_restitution
+                self.gym.set_actor_rigid_shape_properties(env_ptr, hand_actor, hand_props)
+
+                object_props = self.gym.get_actor_rigid_shape_properties(env_ptr, object_handle)
+                for p in object_props:
+                    p.restitution = rand_restitution
+                self.gym.set_actor_rigid_shape_properties(env_ptr, object_handle, object_props)
+                obj_restitution = rand_restitution
+            self._update_priv_buf(env_id=i, name='obj_restitution', value=obj_restitution)
+
             if self.randomize_mass:
                 prop = self.gym.get_actor_rigid_body_properties(env_ptr, object_handle)
                 for p in prop:
@@ -250,6 +321,11 @@ class AllegroHandHora(VecTask):
                 prop = self.gym.get_actor_rigid_body_properties(env_ptr, object_handle)
                 self._update_priv_buf(env_id=i, name='obj_mass', value=prop[0].mass)
 
+            # set object color (or render texture if needed)
+            color = np.array([179, 193, 134]) / 255.0
+            self.gym.set_rigid_body_color(
+                env_ptr, object_handle, 0, gymapi.MESH_VISUAL, gymapi.Vec3(*color))
+
             if self.aggregate_mode > 0:
                 self.gym.end_aggregate(env_ptr)
 
@@ -259,6 +335,96 @@ class AllegroHandHora(VecTask):
         self.object_rb_handles = to_torch(self.object_rb_handles, dtype=torch.long, device=self.device)
         self.hand_indices = to_torch(self.hand_indices, dtype=torch.long, device=self.device)
         self.object_indices = to_torch(self.object_indices, dtype=torch.long, device=self.device)
+
+        self.env_obj_ids = torch_long(env_obj_ids, device=self.device).view(-1, 1)
+        self.object_ptds = np.stack(self.object_ptds, axis=0)
+        self.object_ptds = torch_float(self.object_ptds, device=self.device)
+
+    def parse_obj_dataset(self, dataset):
+        asset_root = Path(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../', 'assets')
+        ).resolve()
+        split_dataset_name = dataset.split(':')
+        dataset_path = asset_root.joinpath(dataset)
+        if len(split_dataset_name) == 1:
+            urdf_path = asset_root.joinpath(dataset, 'urdf')
+        else:
+            target_object = split_dataset_name[1]
+            urdf_path = asset_root.joinpath(split_dataset_name[0], 'urdf', target_object)
+
+        tprint(f'URDF path:{urdf_path}\nDataset path:{dataset_path}')
+        urdf_files = get_all_files_with_suffix(urdf_path, suffix="urdf")
+        permute_ids = self.np_random.permutation(np.arange(len(urdf_files)))
+        permuted_urdfs = [urdf_files[i] for i in permute_ids]
+        object_names = [os.path.splitext(posixpath.name)[0] for posixpath in permuted_urdfs]
+        obj_name_to_id = {name: idx for idx, name in enumerate(object_names)}
+        return permuted_urdfs, dataset_path, urdf_path, obj_name_to_id
+
+    def load_object_asset(self):
+        asset_root = Path(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../', 'assets')).resolve()
+        object_urdfs = self.object_urdfs
+
+        object_assets, object_ids, object_tex_handles, object_ptds = [], [], [], []
+        # object_cat_ids = []
+        if "object_id" in self.config["env"]["object"]:
+            urdf_to_load = self.object_urdfs[self.config["env"]["object"]["object_id"]]
+            tprint(f'Loading a single object: {urdf_to_load}')
+            obj_asset, texture_handle, ptd = self.load_an_object(asset_root,
+                                                                 urdf_to_load)
+            object_assets.append(obj_asset)
+            object_ids.append(self.object_urdfs.index(urdf_to_load))
+            object_tex_handles.append(texture_handle)
+            object_ptds.append(ptd)
+            # object_cat_ids.append(self.obj_name_to_cat_id[self.get_object_category(urdf_to_load)])
+        else:
+            if "start_id" not in self.config["env"]["object"]:
+                start = 0
+                end = min(len(object_urdfs), self.config["env"]["object"]["num_objs"])
+            else:
+                start = self.config["env"]["object"]["start_id"]
+                end = min(start + self.config["env"]["object"]["num_objs"], len(object_urdfs))
+            iters = range(start, end)
+            tprint(f'Loading object IDs from {start} to {end}.')
+            for idx in tqdm(iters, desc='Loading Asset'):
+                urdf_to_load = object_urdfs[idx]
+                obj_asset, texture_handle, ptd = self.load_an_object(asset_root,
+                                                                     urdf_to_load)
+                object_assets.append(obj_asset)
+                object_ids.append(self.object_urdfs.index(urdf_to_load))
+                object_tex_handles.append(texture_handle)
+                object_ptds.append(ptd)
+                # object_cat_ids.append(self.obj_name_to_cat_id[self.get_object_category(urdf_to_load)])
+        # return object_assets, goal_assets, object_ids, object_tex_handles, object_ptds, object_cat_ids
+        return object_assets, object_ids, object_tex_handles, object_ptds
+    
+    def load_an_object(self, asset_root, object_urdf):
+        out = []
+        obj_asset = load_an_object_asset(self.gym, self.sim, asset_root, object_urdf, vhacd=self.config['env']['vhacd'])
+        # obj_asset = self.change_obj_asset_dyn(obj_asset)
+        # goal_obj_asset = load_a_goal_object_asset(self.gym, self.sim, asset_root, object_urdf, vhacd=False)
+        ptd = None
+
+        if self.config["env"]["object"]["dataset"] == "ycb":
+            mid_folder = "google_16k"
+        elif self.config["env"]["object"]["dataset"] == "miscnet":
+            mid_folder = ""
+
+        if self.config["env"]["loadCADPTD"]:
+            object_name = get_filename_from_path(object_urdf, with_suffix=False)
+            ptd_file = object_urdf.parent.parent.joinpath(
+                object_name, mid_folder, f'point_cloud_{self.config["env"]["objCadNumPts"]}_pts.pkl')
+            if ptd_file.exists():
+                ptd = load_from_pickle(ptd_file)
+        out.append(obj_asset)
+        # out.append(goal_obj_asset)
+        if self.config["env"]["object"]["load_texture"]:
+            texture_handle = load_obj_texture(self.gym, self.sim, object_urdf)
+            out.append(texture_handle)
+        else:
+            out.append([])
+        out.append(ptd)
+        return out
 
     def reset_idx(self, env_ids):
         if self.randomize_pd_gains:
@@ -330,6 +496,52 @@ class AllegroHandHora(VecTask):
 
         self.proprio_hist_buf[:] = self.obs_buf_lag_history[:, -self.prop_hist_len:].clone()
         self._update_priv_buf(env_id=range(self.num_envs), name='obj_position', value=self.object_pos.clone())
+        # obj_orientation & obj_angvel are included as priv_info
+        self._update_priv_buf(env_id=range(self.num_envs), name='obj_orientation', value=self.object_rot.clone())
+        self._update_priv_buf(env_id=range(self.num_envs), name='obj_angvel', value=self.object_angvel.clone())
+
+        # compute ptd observation
+        self.scene_ptd_buf = self.compute_ptd_observations()
+
+    def compute_ptd_observations(self):
+        # self.hand_link_pos = self.rigid_body_states[:, self.hand_body_handles][:, :, 0:3]
+        # self.hand_link_quat = self.rigid_body_states[:, self.hand_body_handles][:, :, 3:7]
+        object_pos = self.object_pos
+        object_quat = self.object_rot
+
+        quats = object_quat[:, None, :]
+        trans = object_pos[:, None, :]
+        quats_in_p3d = quat_xyzw_to_wxyz(quats)
+        rot_mat = p3dtf.quaternion_to_matrix(quats_in_p3d)
+        if self.config['env']['ptd_to_robot_base']:
+            if self.base_link_pose_inv_rot is None:
+                base_link_pos = self.rigid_body_states[:, self.base_link_handle][..., :3]
+                base_link_quat = self.rigid_body_states[:, self.base_link_handle][..., 3:7]
+                base_link_quat_in_p3d = quat_xyzw_to_wxyz(base_link_quat)
+                base_link_rot_mat = p3dtf.quaternion_to_matrix(base_link_quat_in_p3d)
+                self.base_link_pose_inv_rot = base_link_rot_mat.transpose(-2, -1)
+                self.base_link_pose_inv_pos = -self.base_link_pose_inv_rot @ base_link_pos.unsqueeze(-1)
+            composed_rot = self.base_link_pose_inv_rot @ rot_mat
+            composed_pos = self.base_link_pose_inv_rot @ trans.unsqueeze(-1) + self.base_link_pose_inv_pos
+            rot_mat = composed_rot
+            trans = composed_pos.squeeze(-1)
+
+        rot_mat_T = rot_mat.transpose(-2, -1)
+        # self.se3_T_hand_buf[:, :3, :3] = rot_mat_T[:, :-2, :3, :3].reshape(-1, 3, 3)
+        # self.se3_T_hand_buf[:, 3, :3] = trans[:, :-2].reshape(-1, 3)
+        self.se3_T_obj_buf[:, :3, :3] = rot_mat_T[:, 0, :3, :3].reshape(-1, 3, 3)
+        self.se3_T_obj_buf[:, 3, :3] = trans[:, 0].reshape(-1, 3)
+        # hand_transform = p3dtf.Transform3d(matrix=self.se3_T_hand_buf)
+        obj_transform = p3dtf.Transform3d(matrix=self.se3_T_obj_buf)
+
+        # hand_obs = hand_transform.transform_points(points=self.hand_cad_ptd)
+        obj_obs = obj_transform.transform_points(points=self.obj_cad_ptd)
+        obj_obs = obj_obs.view(self.num_envs, -1, 3)
+        ptd_obs = obj_obs
+        if self.quantization_size is not None:
+            ptd_obs = ptd_obs / self.quantization_size
+            ptd_obs = ptd_obs.int()
+        return ptd_obs
 
     def compute_reward(self, actions):
         self.rot_axis_buf[:, -1] = -1
@@ -346,6 +558,8 @@ class AllegroHandHora(VecTask):
         # linear velocity: use position difference instead of self.object_linvel
         object_linvel = ((self.object_pos - self.object_pos_prev) / (self.control_freq_inv * self.dt)).clone()
         object_linvel_penalty = torch.norm(object_linvel, p=1, dim=-1)
+        # rotate penalty: alleviate unstable behaviors when rotating over x and y-axis
+        rotate_penalty = torch.norm(torch.cross(object_angvel, self.rot_axis_buf, dim=-1), p=1, dim=-1)
 
         self.rew_buf[:] = compute_hand_reward(
             object_linvel_penalty, self.object_linvel_penalty_scale,
@@ -353,6 +567,7 @@ class AllegroHandHora(VecTask):
             pose_diff_penalty, self.pose_diff_penalty_scale,
             torque_penalty, self.torque_penalty_scale,
             work_penalty, self.work_penalty_scale,
+            rotate_penalty, self.rotate_penalty_scale
         )
         self.reset_buf[:] = self.check_termination(self.object_pos)
         self.extras['rotation_reward'] = rotate_reward.mean()
@@ -363,6 +578,7 @@ class AllegroHandHora(VecTask):
         self.extras['roll'] = object_angvel[:, 0].mean()
         self.extras['pitch'] = object_angvel[:, 1].mean()
         self.extras['yaw'] = object_angvel[:, 2].mean()
+        self.extras['rotation_penalty'] = rotate_penalty.mean()
 
         if self.evaluate:
             finished_episode_mask = self.reset_buf == 1
@@ -438,14 +654,14 @@ class AllegroHandHora(VecTask):
         super().reset()
         self.obs_dict['priv_info'] = self.priv_info_buf.to(self.rl_device)
         self.obs_dict['proprio_hist'] = self.proprio_hist_buf.to(self.rl_device)
+        self.obs_dict['mesh_ptd'] = self.scene_ptd_buf.to(self.rl_device)
         return self.obs_dict
 
     def step(self, actions):
         super().step(actions)
         self.obs_dict['priv_info'] = self.priv_info_buf.to(self.rl_device)
         self.obs_dict['proprio_hist'] = self.proprio_hist_buf.to(self.rl_device)
-
-        self.num_env_steps += 1
+        self.obs_dict['mesh_ptd'] = self.scene_ptd_buf.to(self.rl_device)
         return self.obs_dict, self.rew_buf, self.reset_buf, self.extras
 
     def update_low_level_control(self):
@@ -489,6 +705,9 @@ class AllegroHandHora(VecTask):
         self.randomize_friction = rand_config['randomizeFriction']
         self.randomize_friction_lower = rand_config['randomizeFrictionLower']
         self.randomize_friction_upper = rand_config['randomizeFrictionUpper']
+        self.randomize_restitution = False
+        self.randomize_restitution_lower = 0.0
+        self.randomize_restitution_upper = 1.0
         self.randomize_scale = rand_config['randomizeScale']
         self.scale_list_init = rand_config['scaleListInit']
         self.randomize_scale_list = rand_config['randomizeScaleList']
@@ -503,10 +722,13 @@ class AllegroHandHora(VecTask):
 
     def _setup_priv_option_config(self, p_config):
         self.enable_priv_obj_position = p_config['enableObjPos']
+        self.enable_priv_obj_orientation = p_config['enableObjOrientation']
+        self.enable_priv_obj_angvel = p_config['enableObjAngVel']
         self.enable_priv_obj_mass = p_config['enableObjMass']
         self.enable_priv_obj_scale = p_config['enableObjScale']
         self.enable_priv_obj_com = p_config['enableObjCOM']
         self.enable_priv_obj_friction = p_config['enableObjFriction']
+        self.enable_priv_obj_restitution = p_config['enableObjRestitution']
 
     def _update_priv_buf(self, env_id, name, value, lower=None, upper=None):
         # normalize to -1, 1
@@ -528,45 +750,37 @@ class AllegroHandHora(VecTask):
         raw_prob = o_config['sampleProb']
         assert (sum(raw_prob) == 1)
 
-        if self.object_type is not None:
-            primitive_list = self.object_type.split('+')
-            print('---- Primitive List ----')
-            print(primitive_list)
-            self.object_type_prob = []
-            self.object_type_list = []
-            self.asset_files_dict = {
-                # 'simple_tennis_ball': 'assets/ball.urdf',
-                'simple_tennis_ball': 'assets/ycb/urdf/056_tennis_ball.urdf',
-                'plastic_lemon': 'assets/ycb/urdf/014_lemon.urdf',
-                'plastic_pear': 'assets/ycb/urdf/016_pear.urdf',
-                'master_chef_can': 'assets/ycb/urdf/002_master_chef_can.urdf',
-            }
-            for p_id, prim in enumerate(primitive_list):
-                if 'cuboid' in prim:
-                    subset_name = self.object_type.split('_')[-1]
-                    cuboids = sorted(glob(f'../assets/cuboid/{subset_name}/*.urdf'))
-                    cuboid_list = [f'cuboid_{i}' for i in range(len(cuboids))]
-                    self.object_type_list += cuboid_list
-                    for i, name in enumerate(cuboids):
-                        self.asset_files_dict[f'cuboid_{i}'] = name.replace('../assets/', '')
-                    self.object_type_prob += [raw_prob[p_id] / len(cuboid_list) for _ in cuboid_list]
-                elif 'cylinder' in prim:
-                    subset_name = self.object_type.split('_')[-1]
-                    cylinders = sorted(glob(f'assets/cylinder/{subset_name}/*.urdf'))
-                    cylinder_list = [f'cylinder_{i}' for i in range(len(cylinders))]
-                    self.object_type_list += cylinder_list
-                    for i, name in enumerate(cylinders):
-                        self.asset_files_dict[f'cylinder_{i}'] = name.replace('../assets/', '')
-                    self.object_type_prob += [raw_prob[p_id] / len(cylinder_list) for _ in cylinder_list]
-                else:
-                    self.object_type_list += [prim]
-                    self.object_type_prob += [raw_prob[p_id]]
-        else:
-            self.asset_files_dict = {
-                'object': o_config['objectAsset'],
-            }
-            self.object_type_list = ['object']
-            self.object_type_prob = [1.0]
+        primitive_list = self.object_type.split('+')
+        print('---- Primitive List ----')
+        print(primitive_list)
+        self.object_type_prob = []
+        self.object_type_list = []
+        self.asset_files_dict = {
+            # 'simple_tennis_ball': 'assets/ball.urdf',
+            'simple_tennis_ball': 'assets/ycb/056_tennis_ball.urdf',
+            'plastic_lemon': 'assets/ycb/014_lemon.urdf',
+            'plastic_pear': 'assets/ycb/016_pear.urdf'
+        }
+        for p_id, prim in enumerate(primitive_list):
+            if 'cuboid' in prim:
+                subset_name = self.object_type.split('_')[-1]
+                cuboids = sorted(glob(f'../assets/cuboid/{subset_name}/*.urdf'))
+                cuboid_list = [f'cuboid_{i}' for i in range(len(cuboids))]
+                self.object_type_list += cuboid_list
+                for i, name in enumerate(cuboids):
+                    self.asset_files_dict[f'cuboid_{i}'] = name.replace('../assets/', '')
+                self.object_type_prob += [raw_prob[p_id] / len(cuboid_list) for _ in cuboid_list]
+            elif 'cylinder' in prim:
+                subset_name = self.object_type.split('_')[-1]
+                cylinders = sorted(glob(f'assets/cylinder/{subset_name}/*.urdf'))
+                cylinder_list = [f'cylinder_{i}' for i in range(len(cylinders))]
+                self.object_type_list += cylinder_list
+                for i, name in enumerate(cylinders):
+                    self.asset_files_dict[f'cylinder_{i}'] = name.replace('../assets/', '')
+                self.object_type_prob += [raw_prob[p_id] / len(cylinder_list) for _ in cylinder_list]
+            else:
+                self.object_type_list += [prim]
+                self.object_type_prob += [raw_prob[p_id]]
         print('---- Object List ----')
         print(self.object_type_list)
         assert (len(self.object_type_list) == len(self.object_type_prob))
@@ -586,8 +800,9 @@ class AllegroHandHora(VecTask):
         self.pose_diff_penalty_scale = r_config['poseDiffPenaltyScale']
         self.torque_penalty_scale = r_config['torquePenaltyScale']
         self.work_penalty_scale = r_config['workPenaltyScale']
+        self.rotate_penalty_scale = r_config['rotatePenaltyScale']
 
-    def _create_object_asset(self):
+    def _create_hand_asset(self):
         # object file to asset
         asset_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../')
         hand_asset_file = self.config['env']['asset']['handAsset']
@@ -606,13 +821,14 @@ class AllegroHandHora(VecTask):
             hand_asset_options.default_dof_drive_mode = gymapi.DOF_MODE_POS
         self.hand_asset = self.gym.load_asset(self.sim, asset_root, hand_asset_file, hand_asset_options)
 
-        # load object asset
-        self.object_asset_list = []
-        for object_type in self.object_type_list:
-            object_asset_file = self.asset_files_dict[object_type]
-            object_asset_options = gymapi.AssetOptions()
-            object_asset = self.gym.load_asset(self.sim, asset_root, object_asset_file, object_asset_options)
-            self.object_asset_list.append(object_asset)
+    # def _create_object_asset(self):
+    #     # load object asset
+    #     self.object_asset_list = []
+    #     for object_type in self.object_type_list:
+    #         object_asset_file = self.asset_files_dict[object_type]
+    #         object_asset_options = gymapi.AssetOptions()
+    #         object_asset = self.gym.load_asset(self.sim, asset_root, object_asset_file, object_asset_options)
+    #         self.object_asset_list.append(object_asset)
 
     def _init_object_pose(self):
         allegro_hand_start_pose = gymapi.Transform()
@@ -648,6 +864,7 @@ def compute_hand_reward(
     pose_diff_penalty, pose_diff_penalty_scale: float,
     torque_penalty, torque_pscale: float,
     work_penalty, work_pscale: float,
+    rotate_penalty, rotate_penalty_scale: float,
 ):
     reward = rotate_reward_scale * rotate_reward
     # Distance from the hand to the object
@@ -655,6 +872,7 @@ def compute_hand_reward(
     reward = reward + pose_diff_penalty * pose_diff_penalty_scale
     reward = reward + torque_penalty * torque_pscale
     reward = reward + work_penalty * work_pscale
+    reward = reward + rotate_penalty * rotate_penalty_scale
     return reward
 
 

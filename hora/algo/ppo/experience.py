@@ -26,7 +26,7 @@ def transform_op(arr):
 
 
 class ExperienceBuffer(Dataset):
-    def __init__(self, num_envs, horizon_length, batch_size, minibatch_size, obs_dim, act_dim, priv_dim, device):
+    def __init__(self, num_envs, horizon_length, batch_size, minibatch_size, obs_dim, act_dim, priv_dim, pts_num, device):
         self.device = device
         self.num_envs = num_envs
         self.transitions_per_env = horizon_length
@@ -36,6 +36,7 @@ class ExperienceBuffer(Dataset):
         self.obs_dim = obs_dim
         self.act_dim = act_dim
         self.priv_dim = priv_dim
+        self.pts_num = pts_num
         self.storage_dict = {
             'obses': torch.zeros((self.transitions_per_env, self.num_envs, self.obs_dim), dtype=torch.float32, device=self.device),
             'priv_info': torch.zeros((self.transitions_per_env, self.num_envs, self.priv_dim), dtype=torch.float32, device=self.device),
@@ -48,6 +49,8 @@ class ExperienceBuffer(Dataset):
             'sigmas': torch.zeros((self.transitions_per_env, self.num_envs, self.act_dim), dtype=torch.float32, device=self.device),
             'returns': torch.zeros((self.transitions_per_env, self.num_envs,  1), dtype=torch.float32, device=self.device),
         }
+        if self.pts_num > 0:
+            self.storage_dict['mesh_ptd'] = torch.zeros((self.transitions_per_env, self.num_envs, self.pts_num, 3), dtype=torch.float32, device=self.device)
 
         self.batch_size = batch_size
         self.minibatch_size = minibatch_size
@@ -69,7 +72,7 @@ class ExperienceBuffer(Dataset):
                 input_dict[k] = v[start:end]
         return input_dict['values'], input_dict['neglogpacs'], input_dict['advantages'], input_dict['mus'], \
             input_dict['sigmas'], input_dict['returns'], input_dict['actions'], \
-            input_dict['obses'], input_dict['priv_info']
+            input_dict['obses'], input_dict['priv_info'], input_dict['mesh_ptd'] if 'mesh_ptd' in input_dict else None
 
     def update_mu_sigma(self, mu, sigma):
         start = self.last_range[0]

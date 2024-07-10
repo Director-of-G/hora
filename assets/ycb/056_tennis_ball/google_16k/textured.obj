@@ -9,7 +9,7 @@
 # Faces: 16384
 #
 ####
-mtllib ./textured.obj.mtl
+mtllib textured.obj.mtl
 
 vn -4.775246 -3.187798 -2.532320
 v -0.025701 -0.012913 -0.016088

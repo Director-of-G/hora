@@ -5,6 +5,7 @@
 # Licensed under The MIT License [see LICENSE for details]
 # --------------------------------------------------------
 
+import os
 import torch
 import numpy as np
 from isaacgym import gymtorch
@@ -60,19 +61,35 @@ class AllegroHandGrasp(AllegroHandHora):
             self.allegro_hand_dof_pos, self.root_state_tensor[self.object_indices, :7]
         ], dim=1)
         self.saved_grasping_states = torch.cat([self.saved_grasping_states, all_states[env_ids][success]])
-        print('current cache size:', self.saved_grasping_states.shape[0])
-        if len(self.saved_grasping_states) >= 5e4:
-            name = f'cache/{self.grasp_cache_name}_grasp_50k_s{str(self.base_obj_scale).replace(".", "")}.npy'
-            np.save(name, self.saved_grasping_states[:50000].cpu().numpy())
-            exit()
+        
+        # there may be some objects that are not grasped
+        if self.num_env_steps > 100 and self.saved_grasping_states.shape[0] == 0:
+            exit(-1)
+        if self.num_env_steps > 500:
+            exit(-1)
+        
+        print(f'total env steps: {self.num_env_steps} | current cache size: {self.saved_grasping_states.shape[0]}')
+        if len(self.saved_grasping_states) >= self.grasp_cache_size:
+            if self.grasp_cache_dataset_name is None or self.grasp_cache_object_name is None:
+                name = f'cache/{self.grasp_cache_name}_grasp_50k_s{str(round(self.base_obj_scale, 2)).replace(".", "")}.npy'
+                np.save(name, self.saved_grasping_states[:self.grasp_cache_size].cpu().numpy())
+            else:
+                cache_root = f'assets/{self.grasp_cache_dataset_name}/cache'
+                if not os.path.exists(cache_root):
+                    os.makedirs(cache_root)
+                if not os.path.exists(os.path.join(cache_root, self.grasp_cache_object_name)):
+                    os.makedirs(os.path.join(cache_root, self.grasp_cache_object_name))
+                name = os.path.join(cache_root, self.grasp_cache_object_name, f'grasp_50k_s{str(round(self.base_obj_scale, 2)).replace(".", "")}.npy')
+                np.save(name, self.saved_grasping_states[:self.grasp_cache_size].cpu().numpy())
+            exit(0)
 
         # reset object
         self.root_state_tensor[self.object_indices[env_ids]] = self.object_init_state[env_ids].clone()
         self.root_state_tensor[self.object_indices[env_ids], 0:2] = self.object_init_state[env_ids, 0:2]
         self.root_state_tensor[self.object_indices[env_ids], self.up_axis_idx] = self.object_init_state[env_ids, self.up_axis_idx]
-        new_object_rot = randomize_rotation(rand_floats[:, 3], rand_floats[:, 4], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids])
-        new_object_rot[:] = 0
-        new_object_rot[:, -1] = 1
+        new_object_rot = randomize_rotation(rand_floats[:, 3]*torch.pi, rand_floats[:, 4]*torch.pi, self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids])
+        # new_object_rot[:] = 0
+        # new_object_rot[:, -1] = 1
         self.root_state_tensor[self.object_indices[env_ids], 3:7] = new_object_rot
         self.root_state_tensor[self.object_indices[env_ids], 7:13] = torch.zeros_like(
             self.root_state_tensor[self.object_indices[env_ids], 7:13])

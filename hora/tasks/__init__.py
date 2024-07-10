@@ -29,6 +29,7 @@
 
 from hora.tasks.allegro_hand_hora import AllegroHandHora
 from hora.tasks.allegro_hand_grasp import AllegroHandGrasp
+from hora.tasks.allegro_hand_rotateit import AllegroHandRotateIt
 
 # Mappings from strings to environments
 isaacgym_task_map = {
@@ -36,4 +37,6 @@ isaacgym_task_map = {
     'AllegroHandGrasp': AllegroHandGrasp,
     'PublicAllegroHandHora': AllegroHandHora,
     'PublicAllegroHandGrasp': AllegroHandGrasp,
+    # new envs for RotateIt
+    'AllegroHandRotateIt': AllegroHandRotateIt,
 }

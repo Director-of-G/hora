@@ -41,6 +41,9 @@ class PPO(object):
         self.priv_info_dim = self.ppo_config['priv_info_dim']
         self.priv_info = self.ppo_config['priv_info']
         self.proprio_adapt = self.ppo_config['proprio_adapt']
+        # ---- Priv shape info ----
+        self.mesh_ptd = self.ppo_config['mesh_ptd']
+        self.mesh_pts_num = self.ppo_config['mesh_pts_num'] if self.mesh_ptd else 0
         # ---- Model ----
         net_config = {
             'actor_units': self.network_config.mlp.units,
@@ -50,6 +53,9 @@ class PPO(object):
             'priv_info': self.priv_info,
             'proprio_adapt': self.proprio_adapt,
             'priv_info_dim': self.priv_info_dim,
+            'mesh_ptd': self.mesh_ptd,
+            'mesh_pts_num': self.mesh_pts_num,
+            'mesh_mlp_units': self.network_config.mesh_ptd_mlp.units,
         }
         self.model = ActorCritic(net_config)
         self.model.to(self.device)
@@ -103,7 +109,7 @@ class PPO(object):
         self.epoch_num = 0
         self.storage = ExperienceBuffer(
             self.num_actors, self.horizon_length, self.batch_size, self.minibatch_size, self.obs_shape[0],
-            self.actions_num, self.priv_info_dim, self.device,
+            self.actions_num, self.priv_info_dim, self.mesh_pts_num, self.device,
         )
 
         batch_size = self.num_actors
@@ -154,6 +160,7 @@ class PPO(object):
         input_dict = {
             'obs': processed_obs,
             'priv_info': obs_dict['priv_info'],
+            'mesh_ptd': obs_dict['mesh_ptd'] if 'mesh_ptd' in obs_dict else None
         }
         res_dict = self.model.act(input_dict)
         res_dict['values'] = self.value_mean_std(res_dict['values'], True)
@@ -230,6 +237,7 @@ class PPO(object):
             input_dict = {
                 'obs': self.running_mean_std(obs_dict['obs']),
                 'priv_info': obs_dict['priv_info'],
+                'mesh_ptd': obs_dict['mesh_ptd'] if 'mesh_ptd' in obs_dict else None
             }
             mu = self.model.act_inference(input_dict)
             mu = torch.clamp(mu, -1.0, 1.0)
@@ -246,17 +254,25 @@ class PPO(object):
         self.set_train()
         a_losses, b_losses, c_losses = [], [], []
         entropies, kls = [], []
+        import pdb; pdb.set_trace()
         for _ in range(0, self.mini_epochs_num):
             ep_kls = []
             for i in range(len(self.storage)):
-                value_preds, old_action_log_probs, advantage, old_mu, old_sigma, \
-                    returns, actions, obs, priv_info = self.storage[i]
+                storage_ret = self.storage[i]
+                if len(storage_ret) == 9:
+                    value_preds, old_action_log_probs, advantage, old_mu, old_sigma, \
+                        returns, actions, obs, priv_info = storage_ret
+                    mesh_ptd = None
+                else:
+                    value_preds, old_action_log_probs, advantage, old_mu, old_sigma, \
+                        returns, actions, obs, priv_info, mesh_ptd = storage_ret
 
                 obs = self.running_mean_std(obs)
                 batch_dict = {
                     'prev_actions': actions,
                     'obs': obs,
                     'priv_info': priv_info,
+                    'mesh_ptd': mesh_ptd
                 }
                 res_dict = self.model(batch_dict)
                 action_log_probs = res_dict['prev_neglogp']
@@ -321,6 +337,8 @@ class PPO(object):
             # collect o_t
             self.storage.update_data('obses', n, self.obs['obs'])
             self.storage.update_data('priv_info', n, self.obs['priv_info'])
+            if 'mesh_ptd' in self.obs:
+                self.storage.update_data('mesh_ptd', n, self.obs['mesh_ptd'])
             for k in ['actions', 'neglogpacs', 'values', 'mus', 'sigmas']:
                 self.storage.update_data(k, n, res_dict[k])
             # do env step
