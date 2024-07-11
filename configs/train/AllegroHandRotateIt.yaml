@@ -22,8 +22,8 @@ ppo:
   learning_rate: 5e-3
   kl_threshold: 0.02
   # PPO batch collection
-  horizon_length: 8 # default: 8
-  minibatch_size: 64 # default: 32768
+  horizon_length: 10 # default: 8
+  minibatch_size: 32768 # default: 32768
   mini_epochs: 5
   # PPO loss setting
   clip_value: True

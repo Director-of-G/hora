@@ -25,6 +25,17 @@ class AllegroHandGrasp(AllegroHandHora):
         self.y_unit_tensor = to_torch([0, 1, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
         self.z_unit_tensor = to_torch([0, 0, 1], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
 
+        # if grasp cache already exists, reset from pre-generated poses
+        cache_root = f'assets/{self.grasp_cache_dataset_name}/cache'
+        cache_name = os.path.join(cache_root, self.grasp_cache_object_name, f'grasp_50k_s{str(round(self.base_obj_scale, 2)).replace(".", "")}.npy')
+        if os.path.isfile(cache_name):
+            print(f'loading pre-generated poses from {cache_name}')
+            self.reset_from_saved_poses = True
+            self.pre_generated_poses = torch.from_numpy(np.load(cache_name)).to(self.device)
+        else:
+            self.reset_from_saved_poses = False
+            self.pre_generated_poses = None
+
     def reset_idx(self, env_ids):
         if self.randomize_mass:
             lower, upper = self.randomize_mass_lower, self.randomize_mass_upper
@@ -69,38 +80,49 @@ class AllegroHandGrasp(AllegroHandHora):
             exit(-1)
         
         print(f'total env steps: {self.num_env_steps} | current cache size: {self.saved_grasping_states.shape[0]}')
-        if len(self.saved_grasping_states) >= self.grasp_cache_size:
-            if self.grasp_cache_dataset_name is None or self.grasp_cache_object_name is None:
-                name = f'cache/{self.grasp_cache_name}_grasp_50k_s{str(round(self.base_obj_scale, 2)).replace(".", "")}.npy'
-                np.save(name, self.saved_grasping_states[:self.grasp_cache_size].cpu().numpy())
-            else:
-                cache_root = f'assets/{self.grasp_cache_dataset_name}/cache'
-                if not os.path.exists(cache_root):
-                    os.makedirs(cache_root)
-                if not os.path.exists(os.path.join(cache_root, self.grasp_cache_object_name)):
-                    os.makedirs(os.path.join(cache_root, self.grasp_cache_object_name))
-                name = os.path.join(cache_root, self.grasp_cache_object_name, f'grasp_50k_s{str(round(self.base_obj_scale, 2)).replace(".", "")}.npy')
-                np.save(name, self.saved_grasping_states[:self.grasp_cache_size].cpu().numpy())
-            exit(0)
+        if self.reset_from_saved_poses:
+            pass
+        else:
+            if len(self.saved_grasping_states) >= self.grasp_cache_size:
+                if self.grasp_cache_dataset_name is None or self.grasp_cache_object_name is None:
+                    name = f'cache/{self.grasp_cache_name}_grasp_50k_s{str(round(self.base_obj_scale, 2)).replace(".", "")}.npy'
+                    np.save(name, self.saved_grasping_states[:self.grasp_cache_size].cpu().numpy())
+                else:
+                    cache_root = f'assets/{self.grasp_cache_dataset_name}/cache'
+                    if not os.path.exists(cache_root):
+                        os.makedirs(cache_root)
+                    if not os.path.exists(os.path.join(cache_root, self.grasp_cache_object_name)):
+                        os.makedirs(os.path.join(cache_root, self.grasp_cache_object_name))
+                    name = os.path.join(cache_root, self.grasp_cache_object_name, f'grasp_50k_s{str(round(self.base_obj_scale, 2)).replace(".", "")}.npy')
+                    np.save(name, self.saved_grasping_states[:self.grasp_cache_size].cpu().numpy())
+                exit(0)
 
         # reset object
-        self.root_state_tensor[self.object_indices[env_ids]] = self.object_init_state[env_ids].clone()
-        self.root_state_tensor[self.object_indices[env_ids], 0:2] = self.object_init_state[env_ids, 0:2]
-        self.root_state_tensor[self.object_indices[env_ids], self.up_axis_idx] = self.object_init_state[env_ids, self.up_axis_idx]
-        new_object_rot = randomize_rotation(rand_floats[:, 3]*torch.pi, rand_floats[:, 4]*torch.pi, self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids])
-        # new_object_rot[:] = 0
-        # new_object_rot[:, -1] = 1
-        self.root_state_tensor[self.object_indices[env_ids], 3:7] = new_object_rot
-        self.root_state_tensor[self.object_indices[env_ids], 7:13] = torch.zeros_like(
-            self.root_state_tensor[self.object_indices[env_ids], 7:13])
+        if self.reset_from_saved_poses:
+            sampled_pose_idx = np.random.randint(self.pre_generated_poses.shape[0], size=len(env_ids))
+            sampled_pose = self.pre_generated_poses[sampled_pose_idx].clone()
+            self.root_state_tensor[self.object_indices[env_ids]] = self.object_init_state[env_ids].clone()
+            self.root_state_tensor[self.object_indices[env_ids], :7] = sampled_pose[:, 16:]
+            self.root_state_tensor[self.object_indices[env_ids], 7:13] = 0
+            pos = sampled_pose[:, :16]
+        else:
+            self.root_state_tensor[self.object_indices[env_ids]] = self.object_init_state[env_ids].clone()
+            self.root_state_tensor[self.object_indices[env_ids], 0:2] = self.object_init_state[env_ids, 0:2]
+            self.root_state_tensor[self.object_indices[env_ids], self.up_axis_idx] = self.object_init_state[env_ids, self.up_axis_idx]
+            new_object_rot = randomize_rotation(rand_floats[:, 3]*torch.pi, rand_floats[:, 4]*torch.pi, self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids])
+            # new_object_rot[:] = 0
+            # new_object_rot[:, -1] = 1
+            self.root_state_tensor[self.object_indices[env_ids], 3:7] = new_object_rot
+            self.root_state_tensor[self.object_indices[env_ids], 7:13] = torch.zeros_like(
+                self.root_state_tensor[self.object_indices[env_ids], 7:13])
+
+            pos = to_torch(self.canonical_pose, device=self.device)[None].repeat(len(env_ids), 1)
+            pos += 0.25 * rand_floats[:, 5:5 + self.num_allegro_hand_dofs]
+            pos = tensor_clamp(pos, self.allegro_hand_dof_lower_limits, self.allegro_hand_dof_upper_limits)
 
         object_indices = torch.unique(self.object_indices[env_ids]).to(torch.int32)
         self.gym.set_actor_root_state_tensor_indexed(self.sim, gymtorch.unwrap_tensor(self.root_state_tensor),
-                                                     gymtorch.unwrap_tensor(object_indices), len(object_indices))
-
-        pos = to_torch(self.canonical_pose, device=self.device)[None].repeat(len(env_ids), 1)
-        pos += 0.25 * rand_floats[:, 5:5 + self.num_allegro_hand_dofs]
-        pos = tensor_clamp(pos, self.allegro_hand_dof_lower_limits, self.allegro_hand_dof_upper_limits)
+                                                    gymtorch.unwrap_tensor(object_indices), len(object_indices))
 
         self.allegro_hand_dof_pos[env_ids, :] = pos
         self.allegro_hand_dof_vel[env_ids, :] = 0

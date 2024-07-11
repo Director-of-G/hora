@@ -12,13 +12,14 @@ env:
 
   # point cloud
   ptd_to_robot_base: True
+  include_robot_ptd: False
 
   # object asset options
   vhacd: False
   objCadNumPts: 100
   loadCADPTD: True
 
-  episodeLength: 400
+  episodeLength: 400 # default: 400
   enableDebugVis: False
   aggregateMode: 1
 
@@ -34,7 +35,7 @@ env:
   clipActions: 1.0
   reset_height_threshold: 0.645 # default: 0.645
   grasp_cache_name: "internal_allegro"
-  grasp_cache_size: 50000
+  grasp_cache_size: 400
 
   # Random forces applied to the object
   forceScale: 0.0
@@ -72,7 +73,8 @@ env:
     # if scale_list_init is True, randomizeScaleLower and randomizeScaleUpper is not useful
     scaleListInit: True
     # randomizeScaleList: [0.7, 0.72, 0.74, 0.76, 0.78, 0.8, 0.82, 0.84, 0.86]
-    randomizeScaleList: [0.8]
+    randomizeScaleList:
+      [0.68, 0.7, 0.72, 0.74, 0.76, 0.78, 0.8, 0.82, 0.84, 0.86]
     randomizeScaleLower: 0.75 # only useful when not scaleListInit
     randomizeScaleUpper: 0.8 # only useful when not scaleListInit
     randomizePDGains: True
@@ -94,14 +96,18 @@ env:
 
   object:
     dataset: "miscnet" # can be ycb or miscnet
-    num_objs: 10
+    num_objs: 140
     load_texture: False
     type: "block" # can be block, egg or pen
     sampleProb: [1.0]
 
   asset:
     handAsset: "assets/allegro/allegro_internal.urdf"
+    robotCadNumPts: 500
     objAsset: "assets"
+
+  debug:
+    visPcdObservation: False
 
   # set to True if you use camera sensors in the environment
   enableCameraSensors: False

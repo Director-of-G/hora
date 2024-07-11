@@ -254,7 +254,6 @@ class PPO(object):
         self.set_train()
         a_losses, b_losses, c_losses = [], [], []
         entropies, kls = [], []
-        import pdb; pdb.set_trace()
         for _ in range(0, self.mini_epochs_num):
             ep_kls = []
             for i in range(len(self.storage)):

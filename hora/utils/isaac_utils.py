@@ -2,11 +2,13 @@
     Copied from dexenv GitHub repo (https://github.com/Improbable-AI/dexenv)
 """
 
+import os
 import numpy as np
 import torch
 from isaacgym import gymapi
 from isaacgym.gymutil import get_bucketed_val
 from loguru import logger
+import xml.etree.ElementTree as ET
 
 from hora.utils.common import get_all_files_with_suffix
 
@@ -101,3 +103,27 @@ def apply_prop_samples(prop, og_prop, attr, attr_randomization_params, sample):
         if 'num_buckets' in attr_randomization_params and attr_randomization_params['num_buckets'] > 0:
             new_prop_val = get_bucketed_val(new_prop_val, attr_randomization_params)
         setattr(prop, attr, new_prop_val)
+
+
+def get_link_to_collision_geometry_map(urdf_file):
+    # 解析 URDF 文件
+    tree = ET.parse(urdf_file)
+    root = tree.getroot()
+
+    link_to_geom_map = {}
+
+    # 查找指定 link 节点
+    for link in root.findall('link'):
+        # 查找 visual 节点
+        visual = link.find('visual')
+        if visual is not None:
+            # 查找 geometry 节点
+            geometry = visual.find('geometry')
+            if geometry is not None:
+                # 查找 mesh 节点并获取文件名
+                mesh = geometry.find('mesh')
+                if mesh is not None:
+                    filename = mesh.get('filename')
+                    link_to_geom_map[link.get('name')] = \
+                        os.path.splitext(os.path.basename(filename))[0]
+    return link_to_geom_map

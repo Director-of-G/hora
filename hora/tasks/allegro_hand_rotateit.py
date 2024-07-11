@@ -18,8 +18,10 @@ from isaacgym import gymapi
 from isaacgym.torch_utils import to_torch, unscale, quat_apply, tensor_clamp, torch_rand_float, quat_conjugate, quat_mul
 from glob import glob
 from hora.utils.misc import tprint
-from hora.utils.common import get_all_files_with_suffix, get_all_files_with_name, load_from_pickle, get_filename_from_path
-from hora.utils.isaac_utils import load_an_object_asset, load_a_goal_object_asset, load_obj_texture
+from hora.utils.common import get_all_files_with_suffix, get_all_files_with_name, load_from_pickle, \
+    get_filename_from_path
+from hora.utils.isaac_utils import load_an_object_asset, load_a_goal_object_asset, load_obj_texture, \
+    get_link_to_collision_geometry_map
 from hora.utils.torch_utils import torch_float, torch_long, quat_xyzw_to_wxyz
 from .base.vec_task import VecTask
 
@@ -64,7 +66,7 @@ class AllegroHandRotateIt(VecTask):
 
         super().__init__(config, sim_device, graphics_device_id, headless)
 
-        self.read_finger_ptd()
+        self.read_generated_ptd()
 
         self.debug_viz = self.config['env']['enableDebugVis']
         self.max_episode_length = self.config['env']['episodeLength']
@@ -108,15 +110,6 @@ class AllegroHandRotateIt(VecTask):
         self.force_decay = to_torch(self.force_decay, dtype=torch.float, device=self.device)
         self.rb_forces = torch.zeros((self.num_envs, self.num_bodies, 3), dtype=torch.float, device=self.device)
 
-        if self.randomize_scale and self.scale_list_init:
-            self.saved_grasping_states = {}
-            for s in self.randomize_scale_list:
-                self.saved_grasping_states[str(s)] = torch.from_numpy(np.load(
-                    f'cache/{self.grasp_cache_name}_grasp_50k_s{str(s).replace(".", "")}.npy'
-                )).float().to(self.device)
-        else:
-            assert self.save_init_pose
-
         self.rot_axis_buf = torch.zeros((self.num_envs, 3), device=self.device, dtype=torch.float)
 
         # useful buffers
@@ -140,7 +133,28 @@ class AllegroHandRotateIt(VecTask):
         self.env_evaluated = 0
         self.max_evaluate_envs = 500000
 
-    def read_finger_ptd(self):
+        self.num_parallel_steps = 0
+
+    def read_generated_ptd(self):
+        self.hand_ptd_dict = load_from_pickle(self.hand_ptd_path)  # body_link name to point cloud
+        body_links = list(self.link_to_geom_map.keys())
+        for link_name in body_links:
+            if "base_link" in link_name:
+                body_links.remove(link_name)
+        tprint(f'Pre-generated point cloud file contains point cloud for the following links:')
+        for link in body_links:
+            print(f'       {link}')
+        self.ptd_body_links = body_links
+        self.hand_body_links_to_handles = self.gym.get_actor_rigid_body_dict(self.envs[0], self.dex_hands[0])
+
+        self.hand_ptds = torch.from_numpy(
+            np.stack([self.hand_ptd_dict[self.link_to_geom_map[x]] for x in self.ptd_body_links])
+        )
+        self.hand_ptds = self.hand_ptds.to(self.device)
+        self.base_link_handle = torch_long([self.hand_body_links_to_handles['base_link']])
+        self.hand_body_handles = [self.hand_body_links_to_handles[x] for x in self.ptd_body_links]
+        self.hand_body_handles = torch_long(self.hand_body_handles, device=self.device)
+
         self.base_link_pose_inv_rot = None
         self.base_link_pose_inv_pos = None
         self.quantization_size = None
@@ -151,18 +165,49 @@ class AllegroHandRotateIt(VecTask):
         self.finger_tip_handles = [self.hand_body_links_to_handles[x] for x in self.finger_tip_links]
         self.finger_tip_handles = torch_long(self.finger_tip_handles, device=self.device)
 
+        hand_ptds = self.hand_ptds.repeat(self.num_envs, 1, 1, 1)
+        self.hand_cad_ptd = hand_ptds.view(-1, hand_ptds.shape[-2], hand_ptds.shape[-1]).float()
         self.obj_cad_ptd = self.object_ptds
         self.obj_cad_ptd = self.obj_cad_ptd.view(-1, self.obj_cad_ptd.shape[-2], self.obj_cad_ptd.shape[-1]).float()
 
-        # self.se3_T_buf = torch.eye(4, device=self.device).repeat(self.num_envs * (len(self.ptd_body_links) + 2),
-        #                                                          1,
-        #                                                          1)
+        self.se3_T_buf = torch.eye(4, device=self.device).repeat(self.num_envs * (len(self.ptd_body_links) + 2),
+                                                                 1,
+                                                                 1)
 
-        # self.se3_T_hand_buf = torch.eye(4, device=self.device).repeat(self.num_envs * len(self.ptd_body_links),
-        #                                                               1,
-        #                                                               1)
+        self.se3_T_hand_buf = torch.eye(4, device=self.device).repeat(self.num_envs * len(self.ptd_body_links),
+                                                                      1,
+                                                                      1)
 
         self.se3_T_obj_buf = torch.eye(4, device=self.device).repeat(self.num_envs, 1, 1)
+
+    def read_generated_grasp_poses(self, object_names):
+        dataset_name = self.config['env']['object']['dataset']
+        self.saved_grasping_states = {}
+        grasp_cache_size = self.config['env']['grasp_cache_size']
+        # this lut version is faster for reset_idx
+        self.saved_grasping_states_lut = torch.zeros((0, grasp_cache_size, 23), dtype=torch.float, device=self.device)
+        if self.randomize_scale and self.scale_list_init:
+            for obj_name in object_names:
+                if obj_name not in self.saved_grasping_states:
+                    self.saved_grasping_states[obj_name] = {}
+                for s in self.randomize_scale_list:
+                    scale_key = str(round(s, 2)).replace(".", "")
+                    try:
+                        self.saved_grasping_states[obj_name][scale_key] = torch.from_numpy(np.load(
+                            f'assets/{dataset_name}/cache/{obj_name}/grasp_50k_s{scale_key}.npy'
+                        )).float().to(self.device)
+                        self.saved_grasping_states_lut = torch.cat(
+                            [self.saved_grasping_states_lut, self.saved_grasping_states[obj_name][scale_key].clone().unsqueeze(0)],
+                            dim=0
+                        )
+                    except FileNotFoundError:
+                        self.saved_grasping_states.pop(obj_name)
+                        tprint(f'Grasping states for {obj_name} not found for scale {s}')
+                        break
+        else:
+            assert self.save_init_pose
+
+        return list(self.saved_grasping_states.keys())
 
     def set_random_gen(self, seed=12345):
         self.np_random, seed = seeding.np_random(seed)
@@ -173,7 +218,18 @@ class AllegroHandRotateIt(VecTask):
         upper = gymapi.Vec3(spacing, spacing, spacing)
 
         self._create_hand_asset()
-        object_assets, object_ids, object_textures, object_ptds = self.load_object_asset()
+        object_names, object_assets, object_textures, object_ptds = self.load_object_asset()
+        valid_object_names = self.read_generated_grasp_poses(object_names)
+        keep_idx = []
+        for idx, obj_name in enumerate(object_names):
+            if obj_name in valid_object_names:
+                keep_idx.append(idx)
+        object_names = [object_names[i] for i in keep_idx]
+        object_assets = [object_assets[i] for i in keep_idx]
+        object_ids = list(range(len(keep_idx)))
+        object_textures = [object_textures[i] for i in keep_idx]
+        object_ptds = [object_ptds[i] for i in keep_idx]
+        self.object_names = object_names
 
         # set allegro_hand dof properties
         self.num_allegro_hand_dofs = self.gym.get_asset_dof_count(self.hand_asset)
@@ -219,18 +275,19 @@ class AllegroHandRotateIt(VecTask):
         allegro_hand_rb_count = self.gym.get_asset_rigid_body_count(self.hand_asset)
         object_rb_count = self.gym.get_asset_rigid_body_count(object_assets[0])
         self.object_rb_handles = list(range(allegro_hand_rb_count, allegro_hand_rb_count + object_rb_count))
-        
+
         self.object_ptds = []
         self.object_handles = []
         num_object_assets = len(object_assets)
         env_obj_ids = []
+        env_obj_scales = []
+        env_obj_grasp_cache_idx = []
         for i in range(num_envs):
             obj_asset_id = i % num_object_assets
             env_obj_ids.append(object_ids[obj_asset_id])
 
             # create env instance
             env_ptr = self.gym.create_env(self.sim, lower, upper, num_per_row)
-            self.object_ptds.append(object_ptds[obj_asset_id])
 
             if self.aggregate_mode >= 1:
                 obj_num_bodies = self.gym.get_asset_rigid_body_count(object_assets[obj_asset_id])
@@ -262,12 +319,22 @@ class AllegroHandRotateIt(VecTask):
             object_idx = self.gym.get_actor_index(env_ptr, object_handle, gymapi.DOMAIN_SIM)
             self.object_indices.append(object_idx)
 
-            obj_scale = self.base_obj_scale
+            obj_scale = obj_scale_randomize = self.base_obj_scale
             if self.randomize_scale:
                 num_scales = len(self.randomize_scale_list)
-                obj_scale = np.random.uniform(self.randomize_scale_list[i % num_scales] - 0.025, self.randomize_scale_list[i % num_scales] + 0.025)
-            self.gym.set_actor_scale(env_ptr, object_handle, obj_scale)
-            self._update_priv_buf(env_id=i, name='obj_scale', value=obj_scale)
+                obj_scale_id = (i // num_object_assets) % num_scales
+                obj_scale = self.randomize_scale_list[obj_scale_id]
+                obj_scale_randomize = np.random.uniform(obj_scale - 0.025, obj_scale + 0.025)
+            self.gym.set_actor_scale(env_ptr, object_handle, obj_scale_randomize)
+            self._update_priv_buf(env_id=i, name='obj_scale', value=obj_scale_randomize)
+            env_obj_scales.append(obj_scale)
+
+            # save grasp cache index
+            grasp_cache_idx = obj_asset_id * num_scales + obj_scale_id
+            env_obj_grasp_cache_idx.append(grasp_cache_idx)
+
+            # scale pointcloud
+            self.object_ptds.append(obj_scale_randomize * object_ptds[obj_asset_id])
 
             obj_com = [0, 0, 0]
             if self.randomize_com:
@@ -335,8 +402,10 @@ class AllegroHandRotateIt(VecTask):
         self.object_rb_handles = to_torch(self.object_rb_handles, dtype=torch.long, device=self.device)
         self.hand_indices = to_torch(self.hand_indices, dtype=torch.long, device=self.device)
         self.object_indices = to_torch(self.object_indices, dtype=torch.long, device=self.device)
+        self.env_obj_grasp_cache_idx = to_torch(env_obj_grasp_cache_idx, dtype=torch.long, device=self.device)
 
         self.env_obj_ids = torch_long(env_obj_ids, device=self.device).view(-1, 1)
+        self.env_obj_scales = torch_float(env_obj_scales, device=self.device).view(-1, 1)
         self.object_ptds = np.stack(self.object_ptds, axis=0)
         self.object_ptds = torch_float(self.object_ptds, device=self.device)
 
@@ -365,15 +434,16 @@ class AllegroHandRotateIt(VecTask):
             os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../', 'assets')).resolve()
         object_urdfs = self.object_urdfs
 
-        object_assets, object_ids, object_tex_handles, object_ptds = [], [], [], []
-        # object_cat_ids = []
+        object_names, object_assets, object_tex_handles, object_ptds = [], [], [], []
+        # object_ids, object_cat_ids = [], []
         if "object_id" in self.config["env"]["object"]:
             urdf_to_load = self.object_urdfs[self.config["env"]["object"]["object_id"]]
             tprint(f'Loading a single object: {urdf_to_load}')
-            obj_asset, texture_handle, ptd = self.load_an_object(asset_root,
-                                                                 urdf_to_load)
+            obj_name, obj_asset, texture_handle, ptd = self.load_an_object(asset_root,
+                                                                           urdf_to_load)
+            object_names.append(obj_name)
             object_assets.append(obj_asset)
-            object_ids.append(self.object_urdfs.index(urdf_to_load))
+            # object_ids.append(self.object_urdfs.index(urdf_to_load))
             object_tex_handles.append(texture_handle)
             object_ptds.append(ptd)
             # object_cat_ids.append(self.obj_name_to_cat_id[self.get_object_category(urdf_to_load)])
@@ -388,15 +458,16 @@ class AllegroHandRotateIt(VecTask):
             tprint(f'Loading object IDs from {start} to {end}.')
             for idx in tqdm(iters, desc='Loading Asset'):
                 urdf_to_load = object_urdfs[idx]
-                obj_asset, texture_handle, ptd = self.load_an_object(asset_root,
-                                                                     urdf_to_load)
+                obj_name, obj_asset, texture_handle, ptd = self.load_an_object(asset_root,
+                                                                               urdf_to_load)
+                object_names.append(obj_name)
                 object_assets.append(obj_asset)
-                object_ids.append(self.object_urdfs.index(urdf_to_load))
+                # object_ids.append(self.object_urdfs.index(urdf_to_load))
                 object_tex_handles.append(texture_handle)
                 object_ptds.append(ptd)
                 # object_cat_ids.append(self.obj_name_to_cat_id[self.get_object_category(urdf_to_load)])
         # return object_assets, goal_assets, object_ids, object_tex_handles, object_ptds, object_cat_ids
-        return object_assets, object_ids, object_tex_handles, object_ptds
+        return object_names, object_assets, object_tex_handles, object_ptds
     
     def load_an_object(self, asset_root, object_urdf):
         out = []
@@ -410,10 +481,11 @@ class AllegroHandRotateIt(VecTask):
         elif self.config["env"]["object"]["dataset"] == "miscnet":
             mid_folder = ""
 
+        object_name = get_filename_from_path(object_urdf, with_suffix=False)
+        out.append(object_name)
         if self.config["env"]["loadCADPTD"]:
-            object_name = get_filename_from_path(object_urdf, with_suffix=False)
             ptd_file = object_urdf.parent.parent.joinpath(
-                object_name, mid_folder, f'point_cloud_{self.config["env"]["objCadNumPts"]}_pts.pkl')
+                "meshes", object_name, mid_folder, f'point_cloud_{self.config["env"]["objCadNumPts"]}_pts.pkl')
             if ptd_file.exists():
                 ptd = load_from_pickle(ptd_file)
         out.append(obj_asset)
@@ -438,23 +510,39 @@ class AllegroHandRotateIt(VecTask):
         # reset rigid body forces
         self.rb_forces[env_ids, :, :] = 0.0
 
-        num_scales = len(self.randomize_scale_list)
-        for n_s in range(num_scales):
-            s_ids = env_ids[(env_ids % num_scales == n_s).nonzero(as_tuple=False).squeeze(-1)]
-            if len(s_ids) == 0:
-                continue
-            obj_scale = self.randomize_scale_list[n_s]
-            scale_key = str(obj_scale)
-            sampled_pose_idx = np.random.randint(self.saved_grasping_states[scale_key].shape[0], size=len(s_ids))
-            sampled_pose = self.saved_grasping_states[scale_key][sampled_pose_idx].clone()
-            self.root_state_tensor[self.object_indices[s_ids], :7] = sampled_pose[:, 16:]
-            self.root_state_tensor[self.object_indices[s_ids], 7:13] = 0
-            pos = sampled_pose[:, :16]
-            self.allegro_hand_dof_pos[s_ids, :] = pos
-            self.allegro_hand_dof_vel[s_ids, :] = 0
-            self.prev_targets[s_ids, :self.num_allegro_hand_dofs] = pos
-            self.cur_targets[s_ids, :self.num_allegro_hand_dofs] = pos
-            self.init_pose_buf[s_ids, :] = pos.clone()
+        # slower version
+        # ----------------------------------------
+        # for env_id in env_ids:
+        #     obj_id, obj_scale = self.env_obj_ids[env_id].item(), self.env_obj_scales[env_id].item()
+        #     name_key = self.object_names[obj_id]
+        #     scale_key = str(round(obj_scale, 2)).replace(".", "")
+        #     sampled_pose_idx = np.random.randint(self.saved_grasping_states[name_key][scale_key].shape[0])
+        #     # print(f"env {env_id} | reset {sampled_pose_idx}")
+        #     sampled_pose = self.saved_grasping_states[name_key][scale_key][sampled_pose_idx].clone()
+        #     self.root_state_tensor[self.object_indices[env_id], :7] = sampled_pose[16:]
+        #     self.root_state_tensor[self.object_indices[env_id], 7:13] = 0
+        #     pos = sampled_pose[:16]
+        #     self.allegro_hand_dof_pos[env_id, :] = pos
+        #     self.allegro_hand_dof_vel[env_id, :] = 0
+        #     self.prev_targets[env_id, :self.num_allegro_hand_dofs] = pos
+        #     self.cur_targets[env_id, :self.num_allegro_hand_dofs] = pos
+        #     self.init_pose_buf[env_id, :] = pos.clone()
+        # ----------------------------------------
+
+        # faster version
+        # ----------------------------------------
+        grasp_cache_idx = self.env_obj_grasp_cache_idx[env_ids]
+        sampled_pose_idx = np.random.randint(self.saved_grasping_states_lut[0].shape[0], size=len(env_ids))
+        sampled_pose = self.saved_grasping_states_lut[grasp_cache_idx, sampled_pose_idx]
+        self.root_state_tensor[self.object_indices[env_ids], :7] = sampled_pose[:, 16:]
+        self.root_state_tensor[self.object_indices[env_ids], 7:13] = 0
+        pos = sampled_pose[:, :16]
+        self.allegro_hand_dof_pos[env_ids, :] = pos
+        self.allegro_hand_dof_vel[env_ids, :] = 0
+        self.prev_targets[env_ids, :self.num_allegro_hand_dofs] = pos
+        self.cur_targets[env_ids, :self.num_allegro_hand_dofs] = pos
+        self.init_pose_buf[env_ids, :] = pos.clone()
+        # ----------------------------------------
 
         object_indices = torch.unique(self.object_indices[env_ids]).to(torch.int32)
         self.gym.set_actor_root_state_tensor_indexed(self.sim, gymtorch.unwrap_tensor(self.root_state_tensor), gymtorch.unwrap_tensor(object_indices), len(object_indices))
@@ -504,13 +592,13 @@ class AllegroHandRotateIt(VecTask):
         self.scene_ptd_buf = self.compute_ptd_observations()
 
     def compute_ptd_observations(self):
-        # self.hand_link_pos = self.rigid_body_states[:, self.hand_body_handles][:, :, 0:3]
-        # self.hand_link_quat = self.rigid_body_states[:, self.hand_body_handles][:, :, 3:7]
+        self.hand_link_pos = self.rigid_body_states[:, self.hand_body_handles][:, :, 0:3]
+        self.hand_link_quat = self.rigid_body_states[:, self.hand_body_handles][:, :, 3:7]
         object_pos = self.object_pos
         object_quat = self.object_rot
 
-        quats = object_quat[:, None, :]
-        trans = object_pos[:, None, :]
+        quats = torch.cat((self.hand_link_quat, object_quat[:, None, :]), dim=1)
+        trans = torch.cat((self.hand_link_pos, object_pos[:, None, :]), dim=1)
         quats_in_p3d = quat_xyzw_to_wxyz(quats)
         rot_mat = p3dtf.quaternion_to_matrix(quats_in_p3d)
         if self.config['env']['ptd_to_robot_base']:
@@ -527,20 +615,33 @@ class AllegroHandRotateIt(VecTask):
             trans = composed_pos.squeeze(-1)
 
         rot_mat_T = rot_mat.transpose(-2, -1)
-        # self.se3_T_hand_buf[:, :3, :3] = rot_mat_T[:, :-2, :3, :3].reshape(-1, 3, 3)
-        # self.se3_T_hand_buf[:, 3, :3] = trans[:, :-2].reshape(-1, 3)
-        self.se3_T_obj_buf[:, :3, :3] = rot_mat_T[:, 0, :3, :3].reshape(-1, 3, 3)
-        self.se3_T_obj_buf[:, 3, :3] = trans[:, 0].reshape(-1, 3)
-        # hand_transform = p3dtf.Transform3d(matrix=self.se3_T_hand_buf)
+        self.se3_T_hand_buf[:, :3, :3] = rot_mat_T[:, :-1, :3, :3].reshape(-1, 3, 3)
+        self.se3_T_hand_buf[:, 3, :3] = trans[:, :-1].reshape(-1, 3)
+        self.se3_T_obj_buf[:, :3, :3] = rot_mat_T[:, -1, :3, :3].reshape(-1, 3, 3)
+        self.se3_T_obj_buf[:, 3, :3] = trans[:, -1].reshape(-1, 3)
+        hand_transform = p3dtf.Transform3d(matrix=self.se3_T_hand_buf)
         obj_transform = p3dtf.Transform3d(matrix=self.se3_T_obj_buf)
 
-        # hand_obs = hand_transform.transform_points(points=self.hand_cad_ptd)
+        hand_obs = hand_transform.transform_points(points=self.hand_cad_ptd)
         obj_obs = obj_transform.transform_points(points=self.obj_cad_ptd)
+        hand_obs = hand_obs.view(self.num_envs, -1, 3)
         obj_obs = obj_obs.view(self.num_envs, -1, 3)
-        ptd_obs = obj_obs
+        if self.config['env']['include_robot_ptd']:
+            ptd_obs = torch.cat((hand_obs, obj_obs), dim=1)
+        else:
+            ptd_obs = obj_obs
+
+        if self.config['env']['debug']['visPcdObservation'] and self.num_parallel_steps % 10 == 0:
+            import open3d as o3d
+            pcd = o3d.geometry.PointCloud()
+            ptd_obs_with_robot = torch.cat((hand_obs, obj_obs), dim=1)
+            pcd.points = o3d.utility.Vector3dVector(ptd_obs_with_robot[0].cpu().numpy().reshape(-1, 3))
+            o3d.visualization.draw_geometries([pcd])
+
         if self.quantization_size is not None:
             ptd_obs = ptd_obs / self.quantization_size
             ptd_obs = ptd_obs.int()
+        
         return ptd_obs
 
     def compute_reward(self, actions):
@@ -630,6 +731,7 @@ class AllegroHandRotateIt(VecTask):
         self.gym.add_ground(self.sim, plane_params)
 
     def pre_physics_step(self, actions):
+        # actions = torch.zeros_like(actions)
         self.actions = actions.clone().to(self.device)
         targets = self.prev_targets + 1 / 24 * self.actions
         self.cur_targets[:] = tensor_clamp(targets, self.allegro_hand_dof_lower_limits, self.allegro_hand_dof_upper_limits)
@@ -662,6 +764,7 @@ class AllegroHandRotateIt(VecTask):
         self.obs_dict['priv_info'] = self.priv_info_buf.to(self.rl_device)
         self.obs_dict['proprio_hist'] = self.proprio_hist_buf.to(self.rl_device)
         self.obs_dict['mesh_ptd'] = self.scene_ptd_buf.to(self.rl_device)
+        self.num_parallel_steps += 1
         return self.obs_dict, self.rew_buf, self.reset_buf, self.extras
 
     def update_low_level_control(self):
@@ -806,11 +909,15 @@ class AllegroHandRotateIt(VecTask):
         # object file to asset
         asset_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../')
         hand_asset_file = self.config['env']['asset']['handAsset']
+        n_robot_cad_pts = self.config['env']['asset']['robotCadNumPts']
+        self.hand_ptd_path = os.path.join(os.path.dirname(hand_asset_file), f'meshes/allegro/point_cloud_{n_robot_cad_pts}_pts.pkl')
+        self.link_to_geom_map = get_link_to_collision_geometry_map(hand_asset_file)
+
         # load hand asset
         hand_asset_options = gymapi.AssetOptions()
         hand_asset_options.flip_visual_attachments = False
         hand_asset_options.fix_base_link = True
-        hand_asset_options.collapse_fixed_joints = True
+        hand_asset_options.collapse_fixed_joints = False    # set to False for synthetic pointcloud
         hand_asset_options.disable_gravity = True
         hand_asset_options.thickness = 0.001
         hand_asset_options.angular_damping = 0.01

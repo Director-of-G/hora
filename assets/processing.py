@@ -197,19 +197,29 @@ def process_dataset(dataset, exclude_objs, n_p):
             valid_objects.append(name)
 
 
+def generate_dexhand_ptd(hand_name="allegro", n_p=500):
+    """
+        Generate pointcloud for the dexterous hand
+    """
+    hand_mesh_folder = f"./{hand_name}/meshes/{hand_name}"
+    hand_ptd_dict = {}
+    for name in os.listdir(hand_mesh_folder):
+        if not name.endswith("obj"):
+            continue
+        link_name = name.replace(".obj", "")
+
+        mesh = o3d.io.read_triangle_mesh(os.path.join(hand_mesh_folder, name))
+        mesh.compute_vertex_normals()
+
+        pcd = mesh.sample_points_poisson_disk(number_of_points=n_p)
+        pcd_arr = np.asarray(pcd.points, dtype=np.float32)
+
+        hand_ptd_dict[link_name] = pcd_arr
+
+    with open(os.path.join(hand_mesh_folder, f"./point_cloud_{n_p}_pts.pkl"), "wb") as f:
+        pickle.dump(hand_ptd_dict, f)
+
+
 if __name__ == "__main__":
-    process_dataset(
-        dataset="miscnet",
-        exclude_objs=[],
-        n_p=100
-    )
-
-# mesh = o3d.io.read_triangle_mesh("ycb/011_banana/google_16k/nontextured.ply")
-
-# mesh.compute_vertex_normals()
-# obb = mesh.get_oriented_bounding_box()
-# obb.color = (0, 1, 0)  # 绿色
-# o3d.visualization.draw_geometries([mesh, obb])
-
-# pcd = mesh.sample_points_uniformly(number_of_points=500)
-# o3d.visualization.draw_geometries([pcd])
+    # process_dataset(dataset="miscnet", exclude_objs=[], n_p=100)
+    generate_dexhand_ptd(hand_name="allegro", n_p=1000)
