@@ -11,15 +11,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from hora.algo.models.pointnet_utils import PointNetEncoderCustom as PointNetEncoder
+from hora.algo.models.utils import get_activation
 
 
 class MLP(nn.Module):
-    def __init__(self, units, input_size):
+    def __init__(self, units, input_size, act='elu'):
         super(MLP, self).__init__()
+        act = get_activation(act)
         layers = []
         for output_size in units:
             layers.append(nn.Linear(input_size, output_size))
-            layers.append(nn.ELU())
+            # layers.append(nn.ELU())
+            layers.append(act())
             input_size = output_size
         self.mlp = nn.Sequential(*layers)
 
@@ -87,6 +90,9 @@ class ActorCritic(nn.Module):
         self.priv_mlp = kwargs.pop('priv_mlp_units')
         mlp_input_shape = input_shape[0]
 
+        actor_mlp_act = kwargs.pop('actor_act')
+        priv_mlp_act = kwargs.pop('priv_mlp_act')
+
         # point cloud encoder
         self.mesh_ptd = kwargs.pop('mesh_ptd')
         if self.mesh_ptd:
@@ -102,12 +108,12 @@ class ActorCritic(nn.Module):
         self.priv_info_stage2 = kwargs['proprio_adapt']
         if self.priv_info:
             mlp_input_shape += self.priv_mlp[-1] + mesh_emb_dim
-            self.env_mlp = MLP(units=self.priv_mlp, input_size=kwargs['priv_info_dim'])
+            self.env_mlp = MLP(units=self.priv_mlp, input_size=kwargs['priv_info_dim'], act=priv_mlp_act)
 
             if self.priv_info_stage2:
                 self.adapt_tconv = ProprioAdaptTConv()
 
-        self.actor_mlp = MLP(units=self.units, input_size=mlp_input_shape)
+        self.actor_mlp = MLP(units=self.units, input_size=mlp_input_shape, act=actor_mlp_act)
         self.value = torch.nn.Linear(out_size, 1)
         self.mu = torch.nn.Linear(out_size, actions_num)
         self.sigma = nn.Parameter(torch.zeros(actions_num, requires_grad=True, dtype=torch.float32), requires_grad=True)
@@ -147,6 +153,7 @@ class ActorCritic(nn.Module):
         return mu
 
     def _actor_critic(self, obs_dict):
+        import pdb; pdb.set_trace()
         obs = obs_dict['obs']
         extrin, extrin_gt, mesh_emb = None, None, None
         if self.priv_info:

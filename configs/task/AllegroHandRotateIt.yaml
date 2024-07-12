@@ -15,7 +15,7 @@ env:
   include_robot_ptd: False
 
   # object asset options
-  vhacd: False
+  vhacd: True
   objCadNumPts: 100
   loadCADPTD: True
 
@@ -25,7 +25,7 @@ env:
 
   controller:
     torque_control: True
-    controlFrequencyInv: 6 # 20Hz
+    controlFrequencyInv: 10 # default 20Hz (200/20=10 for RotateIt, 120/20=6 for Hora)
     pgain: 3
     dgain: 0.1
 
@@ -33,7 +33,7 @@ env:
 
   clipObservations: 5.0
   clipActions: 1.0
-  reset_height_threshold: 0.645 # default: 0.645
+  reset_height_threshold: 0.635 # default: 0.645 (RotateIt paper uses 13.5cm above palm, see appendix)
   grasp_cache_name: "internal_allegro"
   grasp_cache_size: 400
 
@@ -96,7 +96,7 @@ env:
 
   object:
     dataset: "miscnet" # can be ycb or miscnet
-    num_objs: 140
+    num_objs: 10
     load_texture: False
     type: "block" # can be block, egg or pen
     sampleProb: [1.0]
@@ -113,7 +113,7 @@ env:
   enableCameraSensors: False
 
 sim:
-  dt: 0.0083333 # 120 Hz
+  dt: 0.005 # default 120 Hz (RotateIt uses 200 Hz frequency, see appendix)
   substeps: 1
   up_axis: "z"
   use_gpu_pipeline: ${eq:${...pipeline},'gpu'}

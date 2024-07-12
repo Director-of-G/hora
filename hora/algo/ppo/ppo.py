@@ -47,7 +47,9 @@ class PPO(object):
         # ---- Model ----
         net_config = {
             'actor_units': self.network_config.mlp.units,
+            'actor_act': self.network_config.mlp.act,
             'priv_mlp_units': self.network_config.priv_mlp.units,
+            'priv_mlp_act': self.network_config.priv_mlp.act,
             'actions_num': self.actions_num,
             'input_shape': self.obs_shape,
             'priv_info': self.priv_info,

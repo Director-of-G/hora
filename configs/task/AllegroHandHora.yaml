@@ -14,6 +14,8 @@ env:
   enableDebugVis: False
   aggregateMode: 1
 
+  vhacd: True
+
   controller:
     torque_control: True
     controlFrequencyInv: 6 # 20Hz

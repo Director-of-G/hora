@@ -3,8 +3,10 @@ algo: PPO
 network:
   mlp:
     units: [512, 256, 128]
+    act: "elu"
   priv_mlp:
     units: [256, 128, 8]
+    act: "relu"
   mesh_ptd_mlp:
     units: [32, 32, 32]
 

@@ -611,6 +611,11 @@ class AllegroHandHora(VecTask):
         for object_type in self.object_type_list:
             object_asset_file = self.asset_files_dict[object_type]
             object_asset_options = gymapi.AssetOptions()
+            object_asset_options.thickness = 0.001
+            object_asset_options.override_inertia = True
+            # in order to load assets with multiple convex submeshes
+            if self.config['env']['vhacd']:
+                object_asset_options.convex_decomposition_from_submeshes = True
             object_asset = self.gym.load_asset(self.sim, asset_root, object_asset_file, object_asset_options)
             self.object_asset_list.append(object_asset)
 
