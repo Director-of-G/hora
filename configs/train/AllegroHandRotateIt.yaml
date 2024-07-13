@@ -44,6 +44,6 @@ ppo:
   priv_info: True
   priv_info_dim: 17
   priv_info_embed_dim: 8
-  mesh_ptd: True
+  mesh_ptd: True # default: True
   mesh_pts_num: 100
   proprio_adapt: False

@@ -338,7 +338,7 @@ class PPO(object):
             # collect o_t
             self.storage.update_data('obses', n, self.obs['obs'])
             self.storage.update_data('priv_info', n, self.obs['priv_info'])
-            if 'mesh_ptd' in self.obs:
+            if 'mesh_ptd' in self.storage.storage_dict:
                 self.storage.update_data('mesh_ptd', n, self.obs['mesh_ptd'])
             for k in ['actions', 'neglogpacs', 'values', 'mus', 'sigmas']:
                 self.storage.update_data(k, n, res_dict[k])

@@ -292,8 +292,8 @@ class AllegroHandRotateIt(VecTask):
             if self.aggregate_mode >= 1:
                 obj_num_bodies = self.gym.get_asset_rigid_body_count(object_assets[obj_asset_id])
                 obj_num_shapes = self.gym.get_asset_rigid_shape_count(object_assets[obj_asset_id])
-                max_agg_bodies = self.num_allegro_hand_bodies + obj_num_bodies * 2 + 1
-                max_agg_shapes = self.num_allegro_hand_shapes + obj_num_shapes * 2 + 1
+                max_agg_bodies = self.num_allegro_hand_bodies + obj_num_bodies + 1
+                max_agg_shapes = self.num_allegro_hand_shapes + obj_num_shapes + 1
                 # self.gym.begin_aggregate(env_ptr, max_agg_bodies * 20, max_agg_shapes * 20, True)
                 self.gym.begin_aggregate(env_ptr, max_agg_bodies, max_agg_shapes, True)
 
@@ -671,6 +671,10 @@ class AllegroHandRotateIt(VecTask):
             work_penalty, self.work_penalty_scale,
             rotate_penalty, self.rotate_penalty_scale
         )
+
+        fall_envs = torch.less(self.object_pos[:, -1], self.reset_z_threshold),
+        self.rew_buf = torch.where(fall_envs, self.rew_buf+self.fall_penalty, self.rew_buf)
+
         self.reset_buf[:] = self.check_termination(self.object_pos)
         self.extras['rotation_reward'] = rotate_reward.mean()
         self.extras['object_linvel_penalty'] = object_linvel_penalty.mean()
@@ -905,6 +909,7 @@ class AllegroHandRotateIt(VecTask):
         self.torque_penalty_scale = r_config['torquePenaltyScale']
         self.work_penalty_scale = r_config['workPenaltyScale']
         self.rotate_penalty_scale = r_config['rotatePenaltyScale']
+        self.fall_penalty = r_config['fallPenalty']
 
     def _create_hand_asset(self):
         # object file to asset
