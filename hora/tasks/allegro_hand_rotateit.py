@@ -635,8 +635,9 @@ class AllegroHandRotateIt(VecTask):
             import open3d as o3d
             pcd = o3d.geometry.PointCloud()
             ptd_obs_with_robot = torch.cat((hand_obs, obj_obs), dim=1)
-            pcd.points = o3d.utility.Vector3dVector(ptd_obs_with_robot[0].cpu().numpy().reshape(-1, 3))
-            o3d.visualization.draw_geometries([pcd])
+            for i in range(ptd_obs_with_robot.shape[0]):
+                pcd.points = o3d.utility.Vector3dVector(ptd_obs_with_robot[i].cpu().numpy().reshape(-1, 3))
+                o3d.visualization.draw_geometries([pcd])
 
         if self.quantization_size is not None:
             ptd_obs = ptd_obs / self.quantization_size

@@ -153,7 +153,6 @@ class ActorCritic(nn.Module):
         return mu
 
     def _actor_critic(self, obs_dict):
-        import pdb; pdb.set_trace()
         obs = obs_dict['obs']
         extrin, extrin_gt, mesh_emb = None, None, None
         if self.priv_info:

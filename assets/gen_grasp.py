@@ -42,8 +42,9 @@ def gen_grasp_for_dataset(dataset, cache_size=50):
     object_names = [name.split(".")[0] for name in object_names]
     object_names.sort()
     # for scale in np.arange(0.46, 0.68+0.02, 0.02):
-    for scale in np.arange(0.70, 0.86, 0.02)[::-1]:
-        for name in object_names:
+    # for scale in np.arange(0.70, 0.86, 0.02)[::-1]:
+    for scale in [0.78, 0.76, 0.74, 0.72]:
+        for name in ['104738']:
             if "_" in name:
                 continue
             if os.path.isfile(f"{dataset}/cache/{name}/grasp_50k_s{str(round(scale, 2)).replace('.', '')}.npy"):
@@ -55,4 +56,4 @@ def gen_grasp_for_dataset(dataset, cache_size=50):
 
         
 if __name__ == "__main__":
-    gen_grasp_for_dataset("miscnet")
+    gen_grasp_for_dataset("miscnet", cache_size=50)
