@@ -5,6 +5,7 @@ import subprocess
 import open3d as o3d
 import pybullet as p
 import numpy as np
+from matplotlib import pyplot as plt
 import pickle
 import xml.etree.ElementTree as ET
 import xml.dom.minidom as minidom
@@ -220,6 +221,43 @@ def generate_dexhand_ptd(hand_name="allegro", n_p=500):
         pickle.dump(hand_ptd_dict, f)
 
 
+def visualize_dataset(dataset):
+    mesh_folder = f'./{dataset}/meshes'
+    
+    vis = o3d.visualization.Visualizer()
+    for obj_id, obj_name in enumerate(os.listdir(mesh_folder)):
+        if obj_id < 145: continue
+        print("Current object id {0}, name {1}!".format(obj_id, obj_name))
+        mesh = o3d.io.read_triangle_mesh(os.path.join(mesh_folder, obj_name, "visual_model.obj"))
+        mesh.compute_vertex_normals()
+
+        vis.create_window()
+        vis.add_geometry(mesh)
+
+        opt = vis.get_render_option()
+        opt.mesh_show_back_face = True  # 显示网格的背面
+        # opt.mesh_shade_option = o3d.visualization.MeshShadeOption.Color
+
+        vis.run()
+        vis.destroy_window()
+
+
+def plot_grasp_cache_episode_length(dataset):
+    episode_length = f'./{dataset}/cache/episode_lengths.pkl'
+    episode_length = pickle.load(open(episode_length, "rb"))
+
+    print(f"There are {len(episode_length)} objects in the dataset!")
+    
+    episode_length_list = []
+    for obj_name, length_dict in episode_length.items():
+        episode_length_list.append(np.mean(list(length_dict.values())))
+
+    plt.plot(episode_length_list)
+    plt.show()
+
+
 if __name__ == "__main__":
     # process_dataset(dataset="miscnet", exclude_objs=[], n_p=100)
-    generate_dexhand_ptd(hand_name="allegro", n_p=1000)
+    # generate_dexhand_ptd(hand_name="allegro", n_p=1000)
+    visualize_dataset(dataset="miscnet")
+    # plot_grasp_cache_episode_length(dataset="miscnet")

@@ -23,6 +23,7 @@ from hora.utils.common import get_all_files_with_suffix, get_all_files_with_name
 from hora.utils.isaac_utils import load_an_object_asset, load_a_goal_object_asset, load_obj_texture, \
     get_link_to_collision_geometry_map
 from hora.utils.torch_utils import torch_float, torch_long, quat_xyzw_to_wxyz
+from hora.utils.misc import AverageVectorMeter
 from .base.vec_task import VecTask
 
 
@@ -50,6 +51,10 @@ class AllegroHandRotateIt(VecTask):
         self.reset_z_threshold = self.config['env']['reset_height_threshold']
         self.grasp_cache_name = self.config['env']['grasp_cache_name']
         self.grasp_cache_size = self.config['env']['grasp_cache_size']
+        try:
+            self.obj_whitelist = self.config['env']['object']['whitelist']
+        except:
+            self.obj_whitelist = None
         self.evaluate = self.config['on_evaluation']
 
         # obj_orientation, obj_angvel & obj_restitution are considered in RotateIt
@@ -134,6 +139,7 @@ class AllegroHandRotateIt(VecTask):
         self.max_evaluate_envs = 500000
 
         self.num_parallel_steps = 0
+        self.env_episode_lengths = AverageVectorMeter(vec_len=self.num_envs)
 
     def read_generated_ptd(self):
         self.hand_ptd_dict = load_from_pickle(self.hand_ptd_path)  # body_link name to point cloud
@@ -212,6 +218,23 @@ class AllegroHandRotateIt(VecTask):
     def set_random_gen(self, seed=12345):
         self.np_random, seed = seeding.np_random(seed)
 
+    def get_episode_lengths_dict(self):
+        env_episodes = self.env_episode_lengths.get_mean()
+        episode_lengths_dict = {}
+        
+        assert len(env_episodes) == self.num_envs
+        
+        for env_id in range(self.num_envs):
+            obj_id, obj_scale = self.env_obj_ids[env_id].item(), self.env_obj_scales[env_id].item()
+            name_key = self.object_names[obj_id]
+            if name_key not in episode_lengths_dict:
+                episode_lengths_dict[name_key] = {}
+            scale_key = str(round(obj_scale, 2)).replace(".", "")
+            if scale_key not in episode_lengths_dict[name_key]:
+                episode_lengths_dict[name_key][scale_key] = env_episodes[env_id].item()
+        
+        return episode_lengths_dict
+
     def _create_envs(self, num_envs, spacing, num_per_row):
         self._create_ground_plane()
         lower = gymapi.Vec3(-spacing, -spacing, 0.0)
@@ -219,6 +242,7 @@ class AllegroHandRotateIt(VecTask):
 
         self._create_hand_asset()
         object_names, object_assets, object_textures, object_ptds = self.load_object_asset()
+        
         valid_object_names = self.read_generated_grasp_poses(object_names)
         keep_idx = []
         for idx, obj_name in enumerate(object_names):
@@ -230,6 +254,8 @@ class AllegroHandRotateIt(VecTask):
         object_textures = [object_textures[i] for i in keep_idx]
         object_ptds = [object_ptds[i] for i in keep_idx]
         self.object_names = object_names
+
+        print(f"Loaded {len(object_assets)} objects with point cloud!")
 
         # set allegro_hand dof properties
         self.num_allegro_hand_dofs = self.gym.get_asset_dof_count(self.hand_asset)
@@ -454,12 +480,18 @@ class AllegroHandRotateIt(VecTask):
             else:
                 start = self.config["env"]["object"]["start_id"]
                 end = min(start + self.config["env"]["object"]["num_objs"], len(object_urdfs))
+
+            # TODO(yongpeng): override start & end, remember to deprecate later
+            # start, end = 0, 76
+
             iters = range(start, end)
             tprint(f'Loading object IDs from {start} to {end}.')
             for idx in tqdm(iters, desc='Loading Asset'):
                 urdf_to_load = object_urdfs[idx]
                 obj_name, obj_asset, texture_handle, ptd = self.load_an_object(asset_root,
                                                                                urdf_to_load)
+                if obj_name is None:
+                    continue
                 object_names.append(obj_name)
                 object_assets.append(obj_asset)
                 # object_ids.append(self.object_urdfs.index(urdf_to_load))
@@ -482,6 +514,9 @@ class AllegroHandRotateIt(VecTask):
             mid_folder = ""
 
         object_name = get_filename_from_path(object_urdf, with_suffix=False)
+        if self.obj_whitelist is not None and object_name not in self.obj_whitelist:
+            return None, None, None, None
+        
         out.append(object_name)
         if self.config["env"]["loadCADPTD"]:
             ptd_file = object_urdf.parent.parent.joinpath(
@@ -672,10 +707,13 @@ class AllegroHandRotateIt(VecTask):
             rotate_penalty, self.rotate_penalty_scale
         )
 
-        fall_envs = torch.less(self.object_pos[:, -1], self.reset_z_threshold),
+        fall_envs = torch.less(self.object_pos[:, -1], self.reset_z_threshold)
         self.rew_buf = torch.where(fall_envs, self.rew_buf+self.fall_penalty, self.rew_buf)
 
         self.reset_buf[:] = self.check_termination(self.object_pos)
+        reset_env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
+        self.env_episode_lengths.update(ids=reset_env_ids.cpu(), values=self.progress_buf[reset_env_ids].cpu())
+
         self.extras['rotation_reward'] = rotate_reward.mean()
         self.extras['object_linvel_penalty'] = object_linvel_penalty.mean()
         self.extras['pose_diff_penalty'] = pose_diff_penalty.mean()

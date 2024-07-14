@@ -97,6 +97,26 @@ env:
   object:
     dataset: "miscnet" # can be ycb or miscnet
     num_objs: 140
+    whitelist:
+      [
+        "44447",
+        "15cfi6q3",
+        "34gw8w1t",
+        "teapot",
+        "3ebm2mp0",
+        "xqmslxc8",
+        "30admsmv",
+        "206038",
+        "igea",
+        "3q783q28",
+        "270o9y3w",
+        "2626okj4",
+        "1b0kr9wf",
+        "37384",
+        "208741",
+        "spot",
+        "75443",
+      ]
     load_texture: False
     type: "block" # can be block, egg or pen
     sampleProb: [1.0]

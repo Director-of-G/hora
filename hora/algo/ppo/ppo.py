@@ -13,6 +13,7 @@
 import os
 import time
 import torch
+import pickle
 
 from hora.algo.ppo.experience import ExperienceBuffer
 from hora.algo.models.models import ActorCritic
@@ -100,6 +101,10 @@ class PPO(object):
         # ---- Snapshot
         self.save_freq = self.ppo_config['save_frequency']
         self.save_best_after = self.ppo_config['save_best_after']
+        if 'save_episode_length_after' in self.ppo_config:
+            self.save_episode_length_after = self.ppo_config['save_episode_length_after']
+        else:
+            self.save_episode_length_after = -1
         # ---- Tensorboard Logger ----
         self.extra_info = {}
         writer = SummaryWriter(self.tb_dif)
@@ -206,6 +211,10 @@ class PPO(object):
                 print(f'save current best reward: {mean_rewards:.2f}')
                 self.best_rewards = mean_rewards
                 self.save(os.path.join(self.nn_dir, 'best'))
+
+            if -1 < self.save_episode_length_after <= self.epoch_num:
+                episode_lengths = self.env.get_episode_lengths_dict()
+                pickle.dump(episode_lengths, open(os.path.join(self.nn_dir, 'episode_lengths.pkl'), 'wb'))
 
         print('max steps achieved')
 

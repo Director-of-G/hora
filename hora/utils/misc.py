@@ -93,3 +93,24 @@ class AverageScalarMeter(object):
 
     def get_mean(self):
         return self.mean
+    
+
+class AverageVectorMeter(object):
+    def __init__(self, vec_len) -> None:
+        self.vec_len = vec_len
+        self.current_size = torch.zeros(vec_len,)
+        self.mean = torch.zeros(vec_len,)
+
+    def update(self, ids, values):
+        if len(ids) == 0:
+            return
+        assert len(ids) == len(values)
+        self.mean[ids] = (self.mean[ids] * self.current_size[ids] + values) / (self.current_size[ids] + 1)  
+        self.current_size[ids] += 1
+
+    def clear(self):
+        self.current_size = torch.zeros(self.vec_len,)
+        self.mean = torch.zeros(self.vec_len,)
+
+    def get_mean(self):
+        return self.mean

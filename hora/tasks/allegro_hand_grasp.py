@@ -9,8 +9,13 @@ import os
 import torch
 import numpy as np
 from isaacgym import gymtorch
-from isaacgym.torch_utils import torch_rand_float, quat_from_angle_axis, quat_mul, tensor_clamp, to_torch
+from isaacgym.torch_utils import (
+    torch_rand_float, quat_from_angle_axis, quat_mul,
+    tensor_clamp, to_torch,
+)
+from scipy.spatial.transform import Rotation as sciR
 from hora.tasks.allegro_hand_hora import AllegroHandHora
+from hora.utils.torch_utils import torch_float
 
 
 class AllegroHandGrasp(AllegroHandHora):
@@ -35,6 +40,8 @@ class AllegroHandGrasp(AllegroHandHora):
         else:
             self.reset_from_saved_poses = False
             self.pre_generated_poses = None
+
+        self.reset_from_saved_poses = False
 
     def reset_idx(self, env_ids):
         if self.randomize_mass:
@@ -109,9 +116,14 @@ class AllegroHandGrasp(AllegroHandHora):
             self.root_state_tensor[self.object_indices[env_ids]] = self.object_init_state[env_ids].clone()
             self.root_state_tensor[self.object_indices[env_ids], 0:2] = self.object_init_state[env_ids, 0:2]
             self.root_state_tensor[self.object_indices[env_ids], self.up_axis_idx] = self.object_init_state[env_ids, self.up_axis_idx]
-            new_object_rot = randomize_rotation(rand_floats[:, 3]*torch.pi, rand_floats[:, 4]*torch.pi, self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids])
-            # new_object_rot[:] = 0
-            # new_object_rot[:, -1] = 1
+            
+            if self.gen_grasp_rand_rot:
+                new_object_rot = randomize_rotation(len(env_ids), self.device)
+            else:
+                new_object_rot = generate_rotation_from_xy(rand_floats[:, 3], rand_floats[:, 4], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids])
+                new_object_rot[:] = 0
+                new_object_rot[:, -1] = 1
+            
             self.root_state_tensor[self.object_indices[env_ids], 3:7] = new_object_rot
             self.root_state_tensor[self.object_indices[env_ids], 7:13] = torch.zeros_like(
                 self.root_state_tensor[self.object_indices[env_ids], 7:13])
@@ -175,5 +187,8 @@ class AllegroHandGrasp(AllegroHandHora):
 
 
 @torch.jit.script
-def randomize_rotation(rand0, rand1, x_unit_tensor, y_unit_tensor):
+def generate_rotation_from_xy(rand0, rand1, x_unit_tensor, y_unit_tensor):
     return quat_mul(quat_from_angle_axis(rand0 * np.pi, x_unit_tensor), quat_from_angle_axis(rand1 * np.pi, y_unit_tensor))
+
+def randomize_rotation(num, device):
+    return torch_float(sciR.random(num=num).as_quat()).to(device)

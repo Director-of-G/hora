@@ -31,6 +31,7 @@ class AllegroHandHora(VecTask):
         self._setup_reward_config(config['env']['reward'])
         self.base_obj_scale = config['env']['baseObjScale']
         self.save_init_pose = config['env']['genGrasps']
+        self.gen_grasp_rand_rot = config['env']['gen_grasp_rand_rot']
         self.aggregate_mode = self.config['env']['aggregateMode']
         self.up_axis = 'z'
         self.reset_z_threshold = self.config['env']['reset_height_threshold']

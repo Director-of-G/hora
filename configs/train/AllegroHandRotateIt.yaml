@@ -40,6 +40,7 @@ ppo:
   save_best_after: 0
   save_frequency: 500
   max_agent_steps: 1500000000
+  save_episode_length_after: 10
   # hora setting
   priv_info: True
   priv_info_dim: 17

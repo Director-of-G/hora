@@ -7,6 +7,14 @@ import numpy as np
 HORA_HOME = os.path.join(os.path.dirname(__file__), "../")
 SCRIPT_NAME = "./scripts/gen_grasp.sh"
 
+WHITELIST = [
+    "44447", "15cfi6q3", "34gw8w1t", "teapot",
+    "3ebm2mp0", "xqmslxc8", "30admsmv", "206038",
+    "igea", "3q783q28", "270o9y3w", "2626okj4",
+    "1b0kr9wf", "37384", "208741", "spot",
+    "75443",
+]
+
 def gen_grasp_for_single_object_scale(dataset, object, scale, cache_size):
     # 定义要执行的 shell 脚本和参数
     shell_script = SCRIPT_NAME
@@ -44,7 +52,7 @@ def gen_grasp_for_dataset(dataset, cache_size=50):
     # for scale in np.arange(0.46, 0.68+0.02, 0.02):
     # for scale in np.arange(0.70, 0.86, 0.02)[::-1]:
     for scale in [0.78, 0.76, 0.74, 0.72]:
-        for name in ['104738']:
+        for name in WHITELIST:
             if "_" in name:
                 continue
             if os.path.isfile(f"{dataset}/cache/{name}/grasp_50k_s{str(round(scale, 2)).replace('.', '')}.npy"):
@@ -56,4 +64,4 @@ def gen_grasp_for_dataset(dataset, cache_size=50):
 
         
 if __name__ == "__main__":
-    gen_grasp_for_dataset("miscnet", cache_size=50)
+    gen_grasp_for_dataset("miscnet", cache_size=400)

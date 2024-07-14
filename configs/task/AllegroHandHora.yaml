@@ -23,6 +23,7 @@ env:
     dgain: 0.1
 
   genGrasps: False
+  gen_grasp_rand_rot: False
 
   clipObservations: 5.0
   clipActions: 1.0

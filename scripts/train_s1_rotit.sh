@@ -11,9 +11,9 @@ EXTRA_ARGS_SLUG=${EXTRA_ARGS// /_}
 echo extra "${EXTRA_ARGS}"
 
 CUDA_VISIBLE_DEVICES=${GPUS} \
-python train.py task=AllegroHandRotateIt headless=False seed=${SEED} \
+python train.py task=AllegroHandRotateIt headless=True seed=${SEED} \
 task.env.forceScale=2 task.env.randomForceProbScalar=0.25 \
-task.env.numEnvs=16384 \
+task.env.numEnvs=2048 \
 train.algo=PPO \
 train.ppo.priv_info=True train.ppo.proprio_adapt=False \
 train.ppo.output_name=AllegroHandRotateIt/"${CACHE}" \
