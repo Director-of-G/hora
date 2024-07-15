@@ -1,8 +1,14 @@
 import os
 import shutil
 import subprocess
+import pathlib
 
 import open3d as o3d
+import trimesh
+import open3d
+from open3d.geometry import TriangleMesh # type: ignore
+from trimesh import Trimesh
+
 import pybullet as p
 import numpy as np
 from matplotlib import pyplot as plt
@@ -44,6 +50,41 @@ def generate_urdf_element_tree(urdf_name, visual_file, collision_file, scale):
 
     return tree
 
+def center_3d_mesh(mesh):
+    if type(mesh) == TriangleMesh:
+        center = mesh.get_center()
+        mesh.translate(-center)
+    elif type(mesh) == Trimesh:
+        center = mesh.centroid
+        mesh.apply_translation(-center)
+    return mesh
+
+def remove_texture_from_mesh(mesh):
+    assert type(mesh) == Trimesh
+    material = trimesh.visual.material.SimpleMaterial(name='material_0')
+    mesh.visual.material = material
+    return mesh
+
+def trimesh_to_open3d(trimesh_mesh):
+    """
+    Convert a trimesh format 3D model to open3d format.
+    
+    Args:
+        trimesh_mesh (trimesh.Trimesh): A 3D model in trimesh format.
+    
+    Returns:
+        o3d.geometry.TriangleMesh: A 3D model in open3d format.
+    """
+    # Get vertices and faces
+    vertices = np.asarray(trimesh_mesh.vertices)
+    faces = np.asarray(trimesh_mesh.faces)
+
+    # Create an open3d TriangleMesh object
+    o3d_mesh = o3d.geometry.TriangleMesh()
+    o3d_mesh.vertices = o3d.utility.Vector3dVector(vertices)
+    o3d_mesh.triangles = o3d.utility.Vector3iVector(faces)
+
+    return o3d_mesh
 
 def process_dataset(dataset, exclude_objs, n_p):
     """
@@ -53,7 +94,7 @@ def process_dataset(dataset, exclude_objs, n_p):
         :param exclude_objs: objects to exclude
         :param n_p: number of points to sample
     """
-    folder = f"./{dataset}/meshes"
+    folder = pathlib.Path(f"./{dataset}/meshes")
     valid_objects = []
 
     if dataset == "ycb":
@@ -63,16 +104,31 @@ def process_dataset(dataset, exclude_objs, n_p):
             if name in exclude_objs:
                 continue
 
-            if os.path.exists(os.path.join(folder, "urdf")) and \
-                name + '.urdf' in os.listdir(os.path.join(folder, "urdf")):
+            if os.path.exists(os.path.join(folder.parent, "urdf")) and \
+                name + '.urdf' in os.listdir(os.path.join(folder.parent, "urdf")):
                 print("URDF for {object} already exists!".format(object=name))
                 continue
 
             # read mesh
             try:
-                mesh = o3d.io.read_triangle_mesh(os.path.join(folder, name, "google_16k/nontextured.ply"))
+                # mesh = o3d.io.read_triangle_mesh(os.path.join(folder, name, "google_16k/nontextured.ply"))
+                # mesh = o3d.io.read_triangle_mesh(os.path.join(folder, name, "google_16k/textured.obj"))
+                visual = trimesh.load(os.path.join(folder, name, "google_16k/textured.obj"))
+                # mesh.compute_vertex_normals()
+                assert len(visual.vertices) > 0
+
+                # mesh = center_3d_mesh(mesh)
+                visual = remove_texture_from_mesh(center_3d_mesh(visual))
+                mesh = trimesh_to_open3d(visual)
                 mesh.compute_vertex_normals()
-                assert len(mesh.vertices) > 0
+
+                # debug
+                # mesh.paint_uniform_color([1, 0, 0])
+                # visual_mesh = trimesh_to_open3d(visual)
+                # visual_mesh.compute_vertex_normals()
+                # visual_mesh.paint_uniform_color([0, 1, 0])
+                # o3d.visualization.draw_geometries([mesh, visual_mesh])
+
             except:
                 print("Failed to read mesh for {object}".format(object=name))
                 continue
@@ -99,7 +155,8 @@ def process_dataset(dataset, exclude_objs, n_p):
             )
 
             # generate v-hacd decomposition (with TestVHACD)
-            textured_src = os.path.join(folder, name, "google_16k/textured.obj")
+            textured_src = os.path.join(folder, name, "google_16k/textured_tmp.obj")
+            o3d.io.write_triangle_mesh(textured_src, mesh)
             textured_dst = os.path.join(folder, name, "google_16k/textured_vhacd.obj")
             # vhacd_result = subprocess.run(['TestVHACD', textured_src, '-g false'], stdout=subprocess.DEVNULL)
             # if vhacd_result.returncode != 0:
@@ -125,33 +182,48 @@ def process_dataset(dataset, exclude_objs, n_p):
             except ModuleNotFoundError:
                 print('\n'+"ERROR - pybullet module not found: If you want to do convex decomposisiton, make sure you install pybullet (https://pypi.org/project/pybullet) or install VHACD directly (https://github.com/mikedh/trimesh/issues/404)"+'\n')
                 raise
+            os.remove(textured_src)
 
             # add mixing texture file
-            mtl_file_src = "./ycb/056_tennis_ball/google_16k/textured.obj.mtl"
-            mtl_file_dst = os.path.join(folder, name, "google_16k/textured.obj.mtl")
-            if mtl_file_src != mtl_file_dst: shutil.copyfile(mtl_file_src, mtl_file_dst)
-            texture_obj_file = os.path.join(folder, name, "google_16k/textured.obj")
-            with open(texture_obj_file, 'r') as file:
-                obj_content = file.readlines()
-            for i in range(len(obj_content)):
-                if obj_content[i].startswith('mtllib'):
-                    obj_content[i] = f'mtllib textured.obj.mtl\n'
-                    break
-            with open(texture_obj_file, 'w') as file:
-                file.writelines(obj_content)
+            # mtl_file_src = "./ycb/meshes/056_tennis_ball/google_16k/textured.obj.mtl"
+            # mtl_file_dst = os.path.join(folder, name, "google_16k/textured.obj.mtl")
+            # if mtl_file_src != mtl_file_dst: shutil.copyfile(mtl_file_src, mtl_file_dst)
+            # texture_obj_file = os.path.join(folder, name, "google_16k/textured.obj")
+            # with open(texture_obj_file, 'r') as file:
+            #     obj_content = file.readlines()
+            # for i in range(len(obj_content)):
+            #     if obj_content[i].startswith('mtllib'):
+            #         obj_content[i] = f'mtllib textured.obj.mtl\n'
+            #         break
+            # with open(texture_obj_file, 'w') as file:
+            #     file.writelines(obj_content)
+
+            # generate non-textured visual model
+            # texture_obj_file = os.path.join(folder, name, "google_16k/textured.obj")
+            visual_model_file = os.path.join(folder, name, "google_16k/visual_model.obj")
+            # with open(texture_obj_file, 'r') as file:
+            #     obj_content = file.readlines()
+            # for i in range(len(obj_content)):
+            #     if obj_content[i].startswith('mtllib'):
+            #         obj_content[i] = f'mtllib material_0.mtl\nusemtl material_0\n'
+            #         break
+            # with open(visual_model_file, 'w') as file:
+            #     file.writelines(obj_content)
+
+            visual.export(visual_model_file)
 
             # generate URDF
             urdf_tree = generate_urdf_element_tree(
                 urdf_name=name,
-                visual_file=os.path.join(name, "google_16k/textured.obj"),
-                collision_file=os.path.join(name, "google_16k/textured_vhacd.obj"),
+                visual_file=os.path.join("meshes", name, "google_16k/visual_model.obj"),
+                collision_file=os.path.join("meshes", name, "google_16k/textured_vhacd.obj"),
                 scale=DESIRED_OBJ_SCALE/max(length, width, height)
             )
-            if not os.path.exists(os.path.join(folder, "urdf")):
-                os.makedirs(os.path.join(folder, "urdf"))
+            if not os.path.exists(os.path.join(folder.parent, "urdf")):
+                os.makedirs(os.path.join(folder.parent, "urdf"))
             urdf_tree = ET.tostring(urdf_tree.getroot(), encoding='unicode')
             urdf_tree = minidom.parseString(urdf_tree)
-            with open(os.path.join(folder, "urdf", "{name}.urdf".format(name=name)), "w") as file:
+            with open(os.path.join(folder.parent, "urdf", "{name}.urdf".format(name=name)), "w") as file:
                 file.write(urdf_tree.toprettyxml(indent="  "))
 
             # record object
@@ -225,11 +297,19 @@ def visualize_dataset(dataset):
     mesh_folder = f'./{dataset}/meshes'
     
     vis = o3d.visualization.Visualizer()
-    for obj_id, obj_name in enumerate(os.listdir(mesh_folder)):
-        if obj_id < 145: continue
+    object_name_list = os.listdir(mesh_folder)
+    object_name_list.sort()
+    for obj_id, obj_name in enumerate(object_name_list):
+        mid_folder = "google_16k" if dataset == "ycb" else ""
+        if obj_id < 73: continue
+        try:
+            assert os.path.isfile(os.path.join(mesh_folder, obj_name, mid_folder, "visual_model.obj"))
+            mesh = o3d.io.read_triangle_mesh(os.path.join(mesh_folder, obj_name, mid_folder, "visual_model.obj"))
+            mesh.compute_vertex_normals()
+        except:
+            print("Visual model not found for object id {0}, name {1}!".format(obj_id, obj_name))
+            continue
         print("Current object id {0}, name {1}!".format(obj_id, obj_name))
-        mesh = o3d.io.read_triangle_mesh(os.path.join(mesh_folder, obj_name, "visual_model.obj"))
-        mesh.compute_vertex_normals()
 
         vis.create_window()
         vis.add_geometry(mesh)
@@ -257,7 +337,7 @@ def plot_grasp_cache_episode_length(dataset):
 
 
 if __name__ == "__main__":
-    # process_dataset(dataset="miscnet", exclude_objs=[], n_p=100)
+    # process_dataset(dataset="ycb", exclude_objs=[], n_p=100)
     # generate_dexhand_ptd(hand_name="allegro", n_p=1000)
-    visualize_dataset(dataset="miscnet")
+    visualize_dataset(dataset="ycb")
     # plot_grasp_cache_episode_length(dataset="miscnet")

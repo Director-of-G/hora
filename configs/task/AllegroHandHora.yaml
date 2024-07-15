@@ -30,6 +30,7 @@ env:
   reset_height_threshold: 0.645
   grasp_cache_name: "internal_allegro"
   grasp_cache_size: 50000
+  grasp_rand_init_scale_xy: 0.015
 
   # Random forces applied to the object
   forceScale: 0.0
@@ -89,7 +90,8 @@ env:
     sampleProb: [1.0]
 
   asset:
-    handAsset: "assets/allegro/allegro_internal.urdf"
+    # handAsset: "assets/allegro/allegro_internal.urdf" # default
+    handAsset: "assets/allegro/allegro_official.urdf"
 
   # set to True if you use camera sensors in the environment
   enableCameraSensors: False

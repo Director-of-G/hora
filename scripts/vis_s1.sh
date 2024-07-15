@@ -16,4 +16,5 @@ task.env.grasp_cache_name="${NAME}" \
 task.env.grasp_cache_size="${SIZE}" \
 train.ppo.priv_info=True \
 train.ppo.output_name=AllegroHandHora/"${CACHE}" \
-checkpoint=outputs/AllegroHandHora/"${CACHE}"/stage1_nn/best.pth
+checkpoint=outputs/AllegroHandHora/"${CACHE}"/stage1_nn/best.pth \
+task.env.reset_height_threshold=0.6

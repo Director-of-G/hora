@@ -43,6 +43,8 @@ class AllegroHandGrasp(AllegroHandHora):
 
         self.reset_from_saved_poses = False
 
+        self.grasp_rand_init_scale_xy = self.config["env"]["grasp_rand_init_scale_xy"]
+
     def reset_idx(self, env_ids):
         if self.randomize_mass:
             lower, upper = self.randomize_mass_lower, self.randomize_mass_upper
@@ -114,15 +116,17 @@ class AllegroHandGrasp(AllegroHandHora):
             pos = sampled_pose[:, :16]
         else:
             self.root_state_tensor[self.object_indices[env_ids]] = self.object_init_state[env_ids].clone()
-            self.root_state_tensor[self.object_indices[env_ids], 0:2] = self.object_init_state[env_ids, 0:2]
+            self.root_state_tensor[self.object_indices[env_ids], 0:2] = self.object_init_state[env_ids, 0:2] + \
+                rand_floats[:, 0:2] * self.grasp_rand_init_scale_xy
             self.root_state_tensor[self.object_indices[env_ids], self.up_axis_idx] = self.object_init_state[env_ids, self.up_axis_idx]
             
             if self.gen_grasp_rand_rot:
                 new_object_rot = randomize_rotation(len(env_ids), self.device)
             else:
-                new_object_rot = generate_rotation_from_xy(rand_floats[:, 3], rand_floats[:, 4], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids])
-                new_object_rot[:] = 0
-                new_object_rot[:, -1] = 1
+                # new_object_rot = generate_rotation_from_2axis(rand_floats[:, 3], rand_floats[:, 4], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids])
+                # new_object_rot[:] = 0
+                # new_object_rot[:, -1] = 1
+                new_object_rot = generate_rotation_from_1axis(rand_floats[:, 3], self.z_unit_tensor[env_ids])
             
             self.root_state_tensor[self.object_indices[env_ids], 3:7] = new_object_rot
             self.root_state_tensor[self.object_indices[env_ids], 7:13] = torch.zeros_like(
@@ -187,8 +191,12 @@ class AllegroHandGrasp(AllegroHandHora):
 
 
 @torch.jit.script
-def generate_rotation_from_xy(rand0, rand1, x_unit_tensor, y_unit_tensor):
+def generate_rotation_from_2axis(rand0, rand1, x_unit_tensor, y_unit_tensor):
     return quat_mul(quat_from_angle_axis(rand0 * np.pi, x_unit_tensor), quat_from_angle_axis(rand1 * np.pi, y_unit_tensor))
+
+@torch.jit.script
+def generate_rotation_from_1axis(rand0, unit_tensor):
+    return quat_from_angle_axis(rand0 * np.pi, unit_tensor)
 
 def randomize_rotation(num, device):
     return torch_float(sciR.random(num=num).as_quat()).to(device)

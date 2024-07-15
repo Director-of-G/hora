@@ -51,10 +51,17 @@ class AllegroHandRotateIt(VecTask):
         self.reset_z_threshold = self.config['env']['reset_height_threshold']
         self.grasp_cache_name = self.config['env']['grasp_cache_name']
         self.grasp_cache_size = self.config['env']['grasp_cache_size']
+        
         try:
             self.obj_whitelist = self.config['env']['object']['whitelist']
         except:
             self.obj_whitelist = None
+
+        try:
+            self.obj_blacklist = self.config['env']['object']['blacklist']
+        except:
+            self.obj_blacklist = None
+        
         self.evaluate = self.config['on_evaluation']
 
         # obj_orientation, obj_angvel & obj_restitution are considered in RotateIt
@@ -503,6 +510,13 @@ class AllegroHandRotateIt(VecTask):
     
     def load_an_object(self, asset_root, object_urdf):
         out = []
+
+        object_name = get_filename_from_path(object_urdf, with_suffix=False)
+        if self.obj_whitelist is not None and object_name not in self.obj_whitelist:
+            return None, None, None, None
+        if self.obj_blacklist is not None and object_name in self.obj_blacklist:
+            return None, None, None, None
+
         obj_asset = load_an_object_asset(self.gym, self.sim, asset_root, object_urdf, vhacd=self.config['env']['vhacd'])
         # obj_asset = self.change_obj_asset_dyn(obj_asset)
         # goal_obj_asset = load_a_goal_object_asset(self.gym, self.sim, asset_root, object_urdf, vhacd=False)
@@ -512,10 +526,6 @@ class AllegroHandRotateIt(VecTask):
             mid_folder = "google_16k"
         elif self.config["env"]["object"]["dataset"] == "miscnet":
             mid_folder = ""
-
-        object_name = get_filename_from_path(object_urdf, with_suffix=False)
-        if self.obj_whitelist is not None and object_name not in self.obj_whitelist:
-            return None, None, None, None
         
         out.append(object_name)
         if self.config["env"]["loadCADPTD"]:

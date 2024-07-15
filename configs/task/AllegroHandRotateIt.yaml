@@ -35,7 +35,7 @@ env:
   clipActions: 1.0
   reset_height_threshold: 0.60 # default: 0.645 (RotateIt paper uses 13.5cm above palm, see appendix)
   grasp_cache_name: "internal_allegro"
-  grasp_cache_size: 50 # default: 400
+  grasp_cache_size: 400 # default: 400
 
   # Random forces applied to the object
   forceScale: 0.0
@@ -97,32 +97,53 @@ env:
   object:
     dataset: "miscnet" # can be ycb or miscnet
     num_objs: 140
-    whitelist:
+    whitelist: null
+    # whitelist:
+    #   [
+    #     "44447",
+    #     "15cfi6q3",
+    #     "34gw8w1t",
+    #     "teapot",
+    #     "3ebm2mp0",
+    #     "xqmslxc8",
+    #     "30admsmv",
+    #     "206038",
+    #     "igea",
+    #     "3q783q28",
+    #     "270o9y3w",
+    #     "2626okj4",
+    #     "1b0kr9wf",
+    #     "37384",
+    #     "208741",
+    #     "spot",
+    #     "75443",
+    #   ]
+    blacklist:
       [
-        "44447",
-        "15cfi6q3",
-        "34gw8w1t",
-        "teapot",
-        "3ebm2mp0",
-        "xqmslxc8",
-        "30admsmv",
-        "206038",
-        "igea",
-        "3q783q28",
-        "270o9y3w",
-        "2626okj4",
-        "1b0kr9wf",
-        "37384",
-        "208741",
-        "spot",
-        "75443",
+        "019_pitcher_base",
+        "025_mug",
+        "036_wood_block",
+        "063-a_marbles",
+        "065-a_cups",
+        "065-b_cups",
+        "065-c_cups",
+        "065-d_cups",
+        "065-e_cups",
+        "065-f_cups",
+        "065-g_cups",
+        "065-h_cups",
+        "065-i_cups",
+        "065-j_cups",
+        "070-a_colored_wood_blocks",
+        "073-e_lego_duplo",
       ]
     load_texture: False
     type: "block" # can be block, egg or pen
     sampleProb: [1.0]
 
   asset:
-    handAsset: "assets/allegro/allegro_internal.urdf"
+    # handAsset: "assets/allegro/allegro_internal.urdf" # default
+    handAsset: "assets/allegro/allegro_official.urdf"
     robotCadNumPts: 500
     objAsset: "assets"
 

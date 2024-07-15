@@ -11,7 +11,7 @@ ASSET=$3
 SIZE=$4
 CUDA_VISIBLE_DEVICES=${GPUS} \
 python gen_grasp.py task=AllegroHandGrasp headless=False pipeline=cpu \
-task.env.numEnvs=16 test=True \
+task.env.numEnvs=64 test=True \
 task.env.controller.controlFrequencyInv=8 task.env.episodeLength=50 \
 task.env.controller.torque_control=False task.env.genGrasps=True task.env.baseObjScale="${SCALE}" \
 task.env.object.type=null \
